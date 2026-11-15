@@ -116,7 +116,7 @@ The core's codes, such as `timeout`, `policyChanged`, `routed` and `startedTicke
 
 A Ticket keeps each fact once. It is open while it has no `ended`, which records when, by whom, why and with what outcome it ended; what it last said is its latest Assignment Report (`latestReport`); and its Executor Session is named after it (`workerSessionId` in `src/executor/dsh.ts`).
 
-Its fields are typed: `origin`, the admissible Trigger that gave its Eval's batch its strength and the batch itself (`triggerId`, `triggerIds`); `execution`, what the Executor chose (`name`, `directory` and `assignment`); `delivery`, the last failed Input delivery (`error`, `at`), until a delivery succeeds, a new Assignment starts or the Ticket ends; and `follows`, the Threads a Source made it follow, each `{thread, own, closed?}`: `own` when the Ticket opened it, and `closed` with `at` and `outcome` once it closed. Tickets alone writes `follows`; the GitHub Source reads its pull requests with `pullsOf` and `pullOf` (`src/sources/github-pull.ts`).
+Its fields are typed: `origin`, the admissible Trigger that gave its Eval's batch its strength and the batch itself (`triggerId`, `triggerIds`); `execution`, what the Executor chose (`name`, `directory` and `assignment`); `delivery`, the last failed Input delivery (`error`, `at`), until a delivery succeeds, a new Assignment starts or the Ticket ends; and `follows`, the Threads a Source made it follow, each `{thread, own, closed?}`: `own` when the Ticket opened it, and `closed` with `at` and `outcome` once it closed. Tickets alone writes `follows`; the GitLab Source reads merge requests with `mrsOf` and `mrOf` (`src/sources/gitlab-mr.ts`).
 
 An Input that carries a Trigger records whether a person wrote it, which `waitsForPerson` reads. A Thread also lists in `context` the subscribed Tickets that follow it only for context, and counts in `expired` the Evals of its queued Triggers that expired in a row; an Evaluation records its `primary` Trigger and when its candidate was `delivered`.
 
@@ -249,7 +249,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
 | `src/app/resources.ts`, `src/app/links.ts`, `src/app/cards.ts` | Resource names into reads, source messages into links, records into compact cards for models |
-| `src/sources/github*.ts`, `src/sources/feishu*.ts`, `src/sources/poll.ts` | GitHub and Feishu payloads into Triggers and Thread facts, and messages into CLI calls |
+| `src/sources/gitlab*.ts`, `src/sources/poll.ts` | GitLab payloads into Triggers, pipeline/approval facts and read-only resources; notes/discussions for outbound replies |
 | `src/deployment.ts`, `src/setup.ts`, `src/infra/` | Setup probes and problems, CLI transport, the agent's process environment |
 
 ## Dependency rules
@@ -274,24 +274,20 @@ Each model request binds the Session to the current prompt revision. The revisio
 - **Fixed refusals.** A refusal a person or an agent can cause is a `UserError(code, values)` from `USER_ERRORS` in `src/core/errors.ts`. The management API answers a `missing` code with 404 and the others with 400, and the panel words each code in its language. Setup problems are `SetupError` codes (`src/setup.ts`) and fixed health texts `HealthCode`s (`src/sources/host.ts`), worded the same way.
 ### Source-specific dependencies
 
-Some generic modules still refer directly to GitHub or Feishu:
+The model-facing adapters now use GitLab:
 
-- Outbox applies the Feishu chat word limit.
-- `src/app/links.ts` resolves Feishu message links and `repliedTo`. It and Runtime read settings with `feishuSettings`.
-- `src/app/resources.ts` reads the `feishu/` and `github/` originals; `src/app/cards.ts` uses `pullOf` for Ticket cards.
-- Runtime sends `pullEndNotices` for merged or closed Tickets.
-- Executor tools bind reported pull requests with `readPull` and `claimPull`, using the GitHub context exposed by Runtime.
-- MasterAssessor reads repository files with `readRepositoryPath`.
-- Sessions and Prompts register built-in skills only for GitHub and Feishu. Migration converts their schema-10 records.
-- Setup probes only GitHub and Feishu account fields (`SETUP_FIELDS`). Only those Sources receive account setup problems through `SourceContext.problem`.
-
+- `src/app/resources.ts` reads GitLab Issue/MR descriptions, paginated notes/discussions and pipeline jobs through `readGitlab`; `src/app/cards.ts` uses `mrOf` and exposes `mr_iid`.
+- Executor tools bind reported MRs with `readMr` and `claimMr` using Runtime's GitLab Source context. Binding, report and relay are committed together.
+- MasterAssessor reads files and directories with GitLab `readRepositoryPath`, restricted to the configured project.
+- Sessions and Prompts register `dsh-superagent-gitlab` with the `skill/gitlab` override; former built-in skills are no longer loaded. Saved overrides retain their base for comparison.
+- Runtime sends GitLab terminal notices for GitLab deployments. GitHub Source code, deprecated Deployment fields and schema-10 migration helpers remain until P7; they are not the model-facing interface of a GitLab deployment.
 
 ## Modules
 
 | Path | Responsibility |
 | --- | --- |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
-| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
+| `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveGitlabDeployment` and the deprecated GitHub resolver read the project and the account from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
@@ -314,11 +310,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/memory.ts` | `MemoryRepositories`: the Store's repositories in memory, in the Store's order and with its nested rollback, for domain tests |
 | `src/core/index.ts` | The core's exports |
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
-| `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
+| `src/app/setup.ts` | GitLab-only Setup and `setupChanged`; refuses old GitHub source settings before probing accounts |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
 | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
-| `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
+| `src/app/store.ts` | Store and outbox Receipt; read-only startup guard rejects old schema and GitHub state before writable open |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
 | `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
 | `src/app/effects.ts` | Effects |
@@ -328,7 +324,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
 | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
 | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
-| `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled skills |
+| `src/app/skill-files.ts` | Packaged text: `promptFile`, which joins a file's one-sentence lines into paragraphs, and the bundled GitLab skill |
 | `src/app/sessions.ts` | Sessions |
 | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
@@ -341,7 +337,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/resources.ts` | `RESOURCES` and `readResource`: what `orchestrator_read` reads, for each role |
 | `src/app/tools/tool.ts` | The `Tool` type, `readTool`, the `orchestrator_read` of both roles, and `AcknowledgementSchema` |
 | `src/app/tools/main.ts` | The main Session's tools |
-| `src/app/tools/executor.ts` | An Executor Session's tools |
+| `src/app/tools/executor.ts` | An Executor Session's tools, including transactional MR claiming via `mr_iid` |
 | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
 | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
 | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
@@ -353,7 +349,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
 | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
 | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
-| `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
+| `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; the project-scoped `gitlabApi`/`gitlabPages` and user-level TODO API; `git`. `CliError` carries the code a command's output reports, such as a GitLab HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
@@ -361,19 +357,13 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/kind.ts` | The `SourceKind` protocol |
 | `src/sources/registry.ts` | `SourceRegistry` |
 | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
-| `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
-| `src/sources/github.ts` | The GitHub kind and plugin entry, exported as `./github-watch`: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
-| `src/sources/github-trigger.ts` | GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
-| `src/sources/github-pull.ts` | The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
-| `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
-| `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
-| `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
-| `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
-| `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
-| `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
-| `src/sources/feishu-read.ts` | The `feishu/` reads of a Trigger's message, its root, parent and topic, and `feishuThreadContext`, which gives them to assessments with their images |
+| `src/sources/poll.ts` | Shared Source polling: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+| `src/sources/github.ts` | Legacy GitHub Source code retained until P7, without a published watch entry: a poll round of notifications, the pull requests of open Tickets with their CI, and subscribed Threads |
+| `src/sources/github-trigger.ts` | Legacy module retained until P7: GitHub comments, reviews, Issue bodies and CI changes as Triggers, and GitHub addresses |
+| `src/sources/github-pull.ts` | Legacy module retained until P7: The pull request rules: which pull requests a Ticket follows (`claimPull`, `observePull`), the closes it reports to the Engine, and `pullEndNotices`, the chat notice of a Ticket that ended merged or closed |
+| `src/sources/github-channel.ts` | Legacy module retained until P7: The GitHub Channel: comments and review thread replies, `sent` or `gone` |
+| `src/sources/github-read.ts` | Legacy module retained until P7: CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
-| `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
 | `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
@@ -396,8 +386,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/marks.ts` | The marks of the states the views classify: a Ticket's or a Thread's stage, a Source's state and a Decision's outcome, each as a dot, an icon, a tone and a label |
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
+| `src/sources/gitlab.ts` | GitLab Source kind and plugin entry: TODOs, observed streams, MR discovery/lifecycle, CI and subscribed notes |
+| `src/sources/gitlab-access.ts` | Effective GitLab project/group access levels |
+| `src/sources/gitlab-trigger.ts` | GitLab schemas, Issue/MR thread IDs and Triggers |
+| `src/sources/gitlab-channel.ts` | Idempotent notes and replies in the originating discussion |
+| `src/sources/gitlab-read.ts` | GitLab descriptions, paginated notes/discussions, pipeline jobs and project files |
+| `src/sources/gitlab-mr.ts` | MR binding by source or agent branch, lifecycle facts and terminal notices |
+| `src/sources/retry.ts` | Shared Source retry record |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/gitlab.ts` is the Source plugin entry, built by `tsdown.config.ts` and exported as `./gitlab-watch`. The bundle patch inserts the main plugin and GitLab Source; former watch entries are not exported.
+
+
 
 ## Tests
 
@@ -407,10 +406,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
-| `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
-| `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
-| `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
-| `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
+| `tests/sources.spec.ts` | Historical regression fixture until P7: The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
+| `tests/commands.spec.ts` | Historical regression fixture until P7: CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
+| `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Historical regression fixture until P7: Feishu and GitHub reads |
+| `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | Historical regression fixture until P7: The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
@@ -444,8 +443,20 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
+| `tests/gitlab-access.spec.ts` | GitLab regression and integration checks |
+| `tests/gitlab-channel.spec.ts` | GitLab regression and integration checks |
+| `tests/gitlab-mr.spec.ts` | GitLab regression and integration checks |
+| `tests/gitlab-read.spec.ts` | GitLab regression and integration checks |
+| `tests/gitlab-sources.spec.ts` | GitLab regression and integration checks |
+| `tests/panel-gitlab.spec.tsx` | GitLab panel settings, policy, health, setup errors and Issue/MR channels in en/zh; optional HTML captures for visual QA |
+| `tests/gitlab-views.spec.ts` | Issue/MR search isolation, self-managed links and note deep links |
+| `tests/gitlab-tools.spec.ts` | GitLab regression and integration checks |
+| `tests/gitlab-trigger.spec.ts` | GitLab regression and integration checks |
+
+`tests/fixtures/legacy-runtime.ts` and `legacy-setup.ts` explicitly isolate historical core-test startup until P7; they allow only fixture-owned directories and are never imported by production. GitLab guard and Runtime tests use the real startup path.
 
 `tests/fixtures/` holds what several tests share: `host.ts`, a simulated DeepSeek Harness host; `panel-server.ts` and `panel.tsx`, the fake management API and the panel around a page; `deployment.ts`, a resolved deployment; `git.ts`, the environment of every git the tests start, which names no repository; and `async.ts`.
+
 
 ## Persistence
 
@@ -474,12 +485,12 @@ A generated column is computed from its row's JSON and is empty outside its set,
 | Prompt versions | `prompt-revision`, `prompt-version:<n>` |
 | Main Session | `master-id` |
 | Session prompt history | `session-prompts:<session id>` |
-| Source state | Read positions such as `github-cursor:<number>`, PR CI fingerprints and seen Feishu-topic messages; keys begin with the kind or `thread-` plus a Thread key |
+| Source state | Read positions such as `gitlab-cursor:issue:<iid>` / `gitlab-cursor:mr:<iid>`, CI failing-set fingerprints and TODO retries; keys begin with the kind or `thread-` plus a Thread key |
 | Display names | `source-labels:<source id>` |
 
 Dismissal is stored on its Decision. Input text is rendered from the Ticket when read, so neither needs a separate key-value record.
 
-Read caches use bounded in-memory `TextCache` instances and are lost on restart. A Session paging through an original Source record or prompt preview must reread offset 0 after a restart. Feishu links resolved after intake are cached the same way; link-based search finds them only after that link has been read during the current process lifetime.
+Read caches use bounded in-memory `TextCache` instances and are lost on restart. A Session paging through an original Source record or prompt preview must reread offset 0 after a restart.
 
 Nothing deletes old records yet, so these grow without bound: the `trigger`, `disposition` and `decision` rows; ended Tickets and their Threads; the outbox's receipts; and in `kv`, every saved settings revision and prompt version, the prompt revisions each Session worked under, and the Sources' records per Thread and per Issue or pull request.
 
@@ -562,13 +573,14 @@ Ticket cards use the closed `TICKET_STATES` set from `src/app/cards.ts`: an open
 | `settings`, `settings/<block>` | Revisions and summaries, or a complete block ready to save |
 | `prompts`, `prompts/<revision>`, `prompts/current`, `prompts/defaults`, `prompt-preview/<id>` | Prompt configurations and composed text |
 | `models`, `models/<provider>` | Available models |
-| `feishu/<trigger id>/…`, `github/…` | Original Source records, described in the Source skills |
+| `gitlab/issues/<iid>`, `gitlab/merge_requests/<iid>` | Issue/MR descriptions; append `/notes/<page>` for conversations, MR `/discussions/<page>`, `/pipelines` or `/approvals` |
+| `gitlab/pipelines/<id>/jobs` | Current jobs of the given pipeline |
 
 Ticket Threads are marked `context` for context-only follows and `bound` for Source bindings. Assignment pages are newest first and include report previews. Continue lists with `next_offset`. `/input/<id>` accepts an Input's name or id. `settings` includes small blocks in full and summarizes Policy and Source blocks.
 
-Source resources include message neighborhoods, `github/pulls/<n>/thread/<comment id>` and `github/commits/<sha>/checks`.
+GitLab resources use project-local IIDs for Issues/MRs and numeric pipeline IDs for jobs. Description mentions use TODO events; note/discussion messages carry their original URLs. Approvals return capability availability separately from approved/approved_by facts.
 
-An original's messages read in one compact shape, `{id, from, at, text, reply_to?, path?, line?, url?}`, not as GitHub or Feishu records them.
+An original's messages read in one compact shape, `{id, from, at, text, reply_to?, path?, line?, url?}`, rather than raw API records.
 
 An Executor Session reads only its own Ticket, its Threads, the Triggers that reached it or that its request held, the prompt versions it worked under and the originals, and its pages leave out the ids of what it cannot read, Decisions and other Tickets.
 
@@ -584,7 +596,7 @@ These messages are steered into the main Session's turn:
 
 | Message | Content |
 | --- | --- |
-| Candidate | Batch Trigger cards, Thread, `related_tickets`, `tickets_total`, `delivered_to`, referenced Tickets from Issue/PR links, `handed_back` reasons and the next action |
+| Candidate | Batch Trigger cards, Thread, `related_tickets`, `tickets_total`, `delivered_to`, referenced Tickets from Issue/MR links, `handed_back` reasons and the next action |
 | `follow_up` | One message as its Executor sees it, `replies_to`, receiving Tickets, and the reminder that Executors decide it while the main Session may only stop work |
 | `worker_report` | Ticket card, originating Trigger, state and summary up to 600 characters; `chars` and a read pointer when truncated |
 | `worker_attention` | Ticket card carrying the question |
@@ -609,7 +621,7 @@ A settings save that changes a Source field setup reads, such as an account's CL
 
 ## Reviewing a change against real data
 
-Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the main Session id. Give the GitHub and Feishu CLIs read-only stand-ins.
+Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the main Session id. Give the GitLab CLI read-only stand-ins; never use production credentials in a recovery rehearsal.
 
 ## Open questions
 

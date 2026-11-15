@@ -45,16 +45,13 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
       return { revision: revision + 1, restarting: false }
     } })
   const accounts = setup.accounts
-  // Remote browsers (`memory` mode) are read-only; `unavailable` indicates `dsh-superagent` is still starting.
-  const readOnlyHint = !form ? t('deploymentNoForms') : snapshot?.mode === 'memory' ? t('deploymentReadOnly')
+  const readOnlyHint = !form ? t('deploymentNoForms')
     : snapshot?.status === 'loading' ? t('loading') : snapshot?.status === 'unavailable' ? t('deploymentUnavailable')
     : !editable ? t('deploymentReadOnly') : undefined
   const limit = (key: typeof MACHINE_LIMITS[number], label: string) => <Field label={label}>
     <Input type="number" min={LIMITS[key].min} max={LIMITS[key].max} step={1} value={draft.value[key]} disabled={!editable}
       onChange={event => draft.edit({ ...draft.value, [key]: event.target.value })} />
   </Field>
-  const feishu = accounts?.feishu ? accounts.feishu.name || accounts.feishu.botId
-    : setup.feishuProblem ? setupText(t, setup.feishuProblem) : t('deploymentFeishuNone')
   return <form className="dt-form" onSubmit={event => { void draft.submit(event) }}>
     <Fields disabled={draft.busy}>
       <Hint>{t('deploymentIntro')}</Hint>
@@ -62,8 +59,10 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
         <p className="dt-error" role="status"><SetupMessage problem={setup.problem} lead /></p><CheckSetupButton />
       </div>}
       {showAccounts && <Section title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
-        <KeyValues rows={[[t('deploymentRepository'), accounts?.repository ?? '—'],
-          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
+        <KeyValues rows={[[t('deploymentProject'), accounts?.project ?? '—'],
+          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'],
+          ...accounts?.host ? [[t('deploymentHost'), accounts.host] as [string, string]] : [],
+          ...accounts?.cli ? [[t('deploymentCli'), accounts.cli] as [string, string]] : []]} />
         <Hint>{t('deploymentAccountsWhere')}</Hint>
       </Section>}
       <Section title={t('deploymentMachine')}>

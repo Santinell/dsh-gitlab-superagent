@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
+import { resolveAccess } from './sources/gitlab-access.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
@@ -30,7 +31,7 @@ export interface Machine {
 }
 const MOVED: Record<string, string> = {
   repository: 'on the GitHub Source', branchPrefix: 'in the prepare command of the Execution settings', github: 'on the GitHub Source',
-  feishu: 'on the Feishu Source', author: 'prompt text', repositoryPath: 'in the prepare command of the Execution settings',
+  author: 'prompt text', repositoryPath: 'in the prepare command of the Execution settings',
   worktreeRoot: 'the ticket directory of the Execution settings', blockedCommands: 'in the Execution settings',
 }
 
@@ -46,16 +47,24 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
-export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+export const GitlabAccountsSchema = z.object({
+  project: z.string().trim().regex(/^([A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+)?$/, 'group/project').default(''),
+  cli: z.string().trim().default(''),
+  host: z.string().trim().regex(/^[A-Za-z0-9.-]+(:[0-9]+)?$/, 'hostname or hostname:port').default('gitlab.com'),
+})
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  github: Object.keys(GithubAccountsSchema.shape), gitlab: Object.keys(GitlabAccountsSchema.shape) }
 
+export interface GitlabProject { id: number; path: string; webUrl: string; defaultBranch: string }
+export interface GitlabCodeHost { kind: 'gitlab'; host: string; apiBase: string; webBase: string; cli: string; login: string; userId: number; commitEmail: string }
 export interface Deployment extends Machine {
   repository: string
   github: { cli: string; login: string; noreply: string }
-  feishu?: FeishuBot
+  /** Present for a GitLab deployment; the legacy fields above mirror its project and account for code not migrated yet. */
+  project?: GitlabProject
+  codeHost?: GitlabCodeHost
 }
-export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
 
 /** Resolve a command name or absolute path to an executable file, ignoring the worker shim directory. */
 export function executable(name: string, path: string, exclude?: string): string {
@@ -105,27 +114,38 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
 }
 
-const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })
-const BotInfo = z.object({ bot: z.object({ open_id: z.string().regex(/^ou_[A-Za-z0-9]+$/), app_name: z.string().default('') }) })
-/**
- * Verify that the configured Feishu CLI is authenticated as a bot and restricted to strict mode `bot`.
- * Workers invoke this CLI as `lark-cli`, so a CLI that also permits a user identity would let workers act as that user.
- */
-export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<FeishuBot | undefined> {
-  const { cli: name } = FeishuBotSchema.parse(feishu ?? {})
-  if (!name) return undefined
-  const fail = (error: unknown): never => { throw error instanceof SetupError ? error : new SetupError('feishuCliFailed', { output: reason(error) }) }
-  let cli = ''
-  try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { fail(error) }
-  const run = (...args: string[]): Promise<string> => probe(['env', 'LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1', 'LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1', cli, ...args]).catch(fail)
-  const text = await run('auth', 'status')
-  const status = parsed(AuthStatus, text.slice(text.indexOf('{')))
-  if (!status) return fail(new SetupError('feishuNoApp'))
-  if (status.identities.bot.status !== 'ready') fail(new SetupError('feishuBotNotReady', { app: status.appId, status: status.identities.bot.status }))
-  const mode = /strict-mode:\s*(\w+)/.exec(await run('config', 'strict-mode'))?.[1]
-  if (mode !== 'bot') fail(new SetupError('feishuUserIdentity', { mode: mode ?? 'unknown' }))
-  // `--format json` unwraps only `data`, whereas this endpoint returns the payload under `bot`.
-  const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
-  if (!info) return fail(new SetupError('feishuNoBot'))
-  return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+const GitlabUser = z.object({ username: z.string().regex(/^[A-Za-z0-9_.-]+$/), id: z.number().int().positive(),
+  commit_email: z.string().email().nullish(), web_url: z.string().url() })
+const GitlabProject = z.object({ id: z.number().int().positive(), path_with_namespace: z.string().min(1), web_url: z.string().url(),
+  default_branch: z.string().nullish(), permissions: z.object({
+    project_access: z.object({ access_level: z.number().int() }).nullish(),
+    group_access: z.object({ access_level: z.number().int() }).nullish(),
+  }).nullish() })
+const hostOf = (url: string): string | undefined => { try { return new URL(url).host.toLowerCase() } catch { return undefined } }
+/** Verify the agent's glab identity and push access to the configured GitLab project; the glab-agent wrapper pins host and token. */
+export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const { stateDir } = machine
+  const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
+  const projectPath = accounts.project
+  if (!projectPath) throw new SetupError('projectUnset')
+  if (!accounts.cli) throw new SetupError('gitlabCliUnset')
+  let cli: string
+  try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
+  const agent = parsed(GitlabUser, await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) }))
+  if (!agent) throw new SetupError('gitlabCliNoAccount')
+  const host = accounts.host.toLowerCase()
+  const actual = hostOf(agent.web_url)
+  if (actual !== host) throw new SetupError('projectHostMismatch', { host, actual: actual ?? agent.web_url })
+  const project = parsed(GitlabProject, await probe([cli, 'api', `projects/${encodeURIComponent(projectPath)}`]).catch((error: unknown) => {
+    throw new SetupError('projectUnreadable', { account: agent.username, project: projectPath, output: reason(error) })
+  }))
+  if (!project) throw new SetupError('projectUnreported', { project: projectPath })
+  if (hostOf(project.web_url) !== host) throw new SetupError('projectHostMismatch', { host, actual: hostOf(project.web_url) ?? project.web_url })
+  const access = resolveAccess(project.permissions)
+  if (!access.write) throw new SetupError('projectReadOnly', { account: agent.username, project: project.path_with_namespace })
+  const commitEmail = agent.commit_email || `${agent.id}-${agent.username}@users.noreply.${host.split(':')[0]}`
+  return { ...machine, repository: project.path_with_namespace, github: { cli, login: agent.username, noreply: commitEmail },
+    project: { id: project.id, path: project.path_with_namespace, webUrl: project.web_url, defaultBranch: project.default_branch || 'main' },
+    codeHost: { kind: 'gitlab', host: accounts.host, apiBase: `https://${accounts.host}/api/v4`, webBase: `https://${accounts.host}`,
+      cli, login: agent.username, userId: agent.id, commitEmail } }
 }

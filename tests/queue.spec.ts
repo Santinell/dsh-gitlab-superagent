@@ -1,5 +1,6 @@
 /** Effect queue migration and notice deduplication on the Runtime. */
 import { afterEach, expect, it, vi } from 'vitest'
+import { migrateTo11 } from '../src/app/migration.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
@@ -9,12 +10,13 @@ const notices = (host: Host) => host.agents.get(host.runtime.masterId)!.inject.m
 
 it('delivers the relays, subscription changes and notifications that a version before the effect queue kept, once the migration queued them', async () => {
   h = await startRuntime(store => {
-    // A schema 10 database, which the schema 11 migration brings up to date when the Runtime opens it.
-    store.set('schema', 10)
+    // Prepare a current-schema fixture with the effects produced by the legacy migration.
+    // Runtime itself must refuse legacy databases before opening them for writing.
     store.set('relay-queue', [{ id: 'report:old', text: JSON.stringify({ kind: 'worker_report', ticket_id: 't1', state: 'ready' }) }])
     store.set('subscription-results', ['github:7'])
     store.set('prompt-notification', 3)
     store.set('settings-notification', 5)
+    migrateTo11(store)
   })
   await h.runtime.idle()
   const steered = h.agents.get(h.runtime.masterId)!.steer.mock.calls.map(([message]) => text(message))

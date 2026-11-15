@@ -8,10 +8,11 @@ import type { OutboundMessage } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { sourceContextOf, type SourceContextDeps } from '../src/app/source-context.ts'
-import { feishuChannel, feishuTrigger, feishuTriggerId } from '../src/sources/feishu-trigger.ts'
+import { feishuChannel, feishuTrigger, feishuTriggerId } from './fixtures/feishu/feishu-trigger.ts'
 import { testDeployment } from './fixtures/deployment.ts'
-import { feishuKind } from '../src/sources/feishu.ts'
+import { feishuKind } from './fixtures/feishu/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
+import { GitlabConfigSchema, gitlabKind } from '../src/sources/gitlab.ts'
 
 const probe: SourceKind<{ interval: number }> = {
   kind: 'probe', title: { zh: '探针', en: 'Probe' }, description: { zh: '', en: '' }, health: [],
@@ -159,4 +160,20 @@ describe('Source registry', () => {
     expect(await sources.send(reply, commands)).toBe('sent')
     expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['+messages-reply', '--message-id', 'om_dm']))
   })
+})
+
+it('registers the GitLab kind with its configuration and execution environment', () => {
+  const settings = SettingsSchema.parse({})
+  const sources = new SourceRegistry(() => settings)
+  sources.register(gitlabKind)
+  expect(sources.instance('gitlab')?.config).toEqual({ project: '', cli: '', host: 'gitlab.com', pollSeconds: 60, failuresBeforeError: 3,
+    observeIssues: false, observeMergeRequests: false, observeNotes: false, observeCi: false })
+  expect(sources.validate('gitlab', { enabled: true, config: { project: 'acme/widgets', cli: '/usr/bin/glab-agent',
+    host: 'gitlab.example.com' } })).toMatchObject({ config: { project: 'acme/widgets', cli: '/usr/bin/glab-agent', host: 'gitlab.example.com' } })
+  const deployment = testDeployment({ project: { id: 25, path: 'acme/widgets', webUrl: 'https://gitlab.example.com/acme/widgets', defaultBranch: 'main' },
+    codeHost: { kind: 'gitlab', host: 'gitlab.example.com', apiBase: 'https://gitlab.example.com/api/v4', webBase: 'https://gitlab.example.com',
+      cli: '/usr/bin/glab-agent', login: 'agent', userId: 7, commitEmail: 'agent@example.com' } })
+  expect(gitlabKind.environment!.values({ deployment, config: GitlabConfigSchema.parse({ project: 'acme/widgets', cli: '/usr/bin/glab-agent',
+    host: 'gitlab.example.com' }) })).toMatchObject({ DSH_SUPERAGENT_GITLAB_PROJECT: 'acme/widgets', DSH_SUPERAGENT_GITLAB_ACCOUNT: 'agent',
+    DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL: 'agent@example.com' })
 })

@@ -1,7 +1,9 @@
+import { gitlabKind } from '../../src/sources/gitlab.ts'
 /**
  * In-memory DSH host fixture (as in tests/runtime.spec.ts) running a configured Runtime with GitHub and Feishu sources,
  * allowed member Alice (`ou_alice`), listened chat `oc_team`, and `auto` eval mode. Stop it with `stop()`.
  */
+import { allowLegacyRuntime } from './legacy-runtime.ts'
 import { Context } from '@deepseek-ai/cordis'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,7 +13,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { Runtime } from '../../src/app/runtime.ts'
 import { Store } from '../../src/app/store.ts'
 import { SettingsSchema } from '../../src/policy.ts'
-import { feishuKind, feishuTrigger } from '../../src/sources/feishu.ts'
+import { feishuKind, feishuTrigger } from './feishu/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import { Commands } from '../../src/infra/commands.ts'
 import { credentialHelper, workerGitConfig } from '../../src/infra/environment.ts'
@@ -132,9 +134,14 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 }
 
 /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
-export async function startRuntime(seed?: (store: Store) => void) {
+export async function startRuntime(seed?: (store: Store) => void, options: { gitlab?: boolean } = {}) {
+  let runtime: Runtime
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
+  if (!options.gitlab) allowLegacyRuntime(directory)
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
+  const gitlabProject = { id: 25, path_with_namespace: 'acme/widgets', web_url: 'https://gitlab.example.com/acme/widgets', default_branch: 'main', permissions: { project_access: { access_level: 40 } } }
+  const gitlabUser = { id: 7, username: 'agent-bot', web_url: 'https://gitlab.example.com/agent-bot', commit_email: '7-agent-bot@users.noreply.gitlab.example.com' }
+  vi.spyOn(Commands.prototype, 'glab').mockImplementation(async args => args[1]?.includes('/merge_requests/') ? { iid: Number(args[1].split('/').at(-1)), title: 'Fix', state: 'opened', author: { username: 'agent-bot' }, created_at: new Date().toISOString(), web_url: 'https://gitlab.example.com/acme/widgets/-/merge_requests/42', source_branch: 'agent/' + runtime.store.tickets.open()[0]?.execution?.name, source_project_id: 25, target_project_id: 25 } : [])
   const repository = { default_branch: 'master', permissions: { push: true } }
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : repository)
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
@@ -149,6 +156,11 @@ export async function startRuntime(seed?: (store: Store) => void) {
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
     ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
     [scoped]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
+  }
+  if (options.gitlab) {
+    answers[`${AGENT} api user`] = JSON.stringify(gitlabUser)
+    answers[`${AGENT} api projects/acme%2Fwidgets`] = JSON.stringify(gitlabProject)
+    answers['git config -z --show-origin --get-all credential.https://gitlab.example.com.helper'] = `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`
   }
   /** A prepare command (`sh -c`) waits for this while it is set. */
   const hooks: { prepare?: Promise<void> } = {}
@@ -225,15 +237,15 @@ export async function startRuntime(seed?: (store: Store) => void) {
         })
       })
       agents.set(sessionId, { id: sessionId, ctx: agentCtx, inbox, followup: deliver('queue'), steer: deliver('steer'), inject: vi.fn(), session, cancel,
+        model: { select: vi.fn((selection: unknown) => session.append('model/selection', selection)) },
         get status() { return status }, set status(next: string) { status = next; if (next === 'idle') for (const wake of idle.splice(0)) wake() },
         // Once its turn ended, as DSH's does.
         whenIdle: () => status === 'idle' ? Promise.resolve() : new Promise<void>(resolve => { idle.push(resolve) }) } as never)
     }),
     selectModel: vi.fn(async () => {}), resolveAgent: vi.fn(resolveDefault), rename: vi.fn(async () => {}),
     prompt: vi.fn(() => { throw new Error('Plugin delivery must not use user RPC') }),
-    inspect: vi.fn(async () => ({ events: [] })),
   }
-  const reader = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
+  const reader = { read: vi.fn(async () => ({ events: [] as unknown[] })), [Symbol.asyncDispose]: vi.fn(async () => {}) }
   const persistence = { flush: vi.fn(async () => {}), open: vi.fn(async () => reader) }
   const webServer = { host: '127.0.0.1', port: 3082, register: (route: { handler: HttpHandler }) => { http = route.handler; return () => {} } }
   const jobs = jobRegistry(id => agents.get(id))
@@ -245,17 +257,18 @@ export async function startRuntime(seed?: (store: Store) => void) {
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const seeded = new Store(join(directory, 'orchestrator.sqlite'))
-  const sources = { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
+  const sources = options.gitlab ? { gitlab: { enabled: true, config: { project: 'acme/widgets', host: 'gitlab.example.com', cli: AGENT } } } : { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }, feishu: { enabled: true, config: { cli: BOT } } }
   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
   seed?.(seeded)
   seeded.close()
-  const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
+  runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
   await runtime.ready
-  runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
+  if (options.gitlab) runtime.sources.register(gitlabKind)
+  else { runtime.sources.register(feishuKind); runtime.sources.register(githubKind) }
   const settings = runtime.store.settings()
   runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
-    policy: { ...settings.policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } },
-    sources: { ...sources, feishu: { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
+    policy: { ...settings.policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] }, gitlab: { allowed: [{ id: 'alice' }] } } },
+    sources: options.gitlab ? sources : { ...sources, feishu: { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
 
   /** Parsed JSON payloads delivered to `sessionId`. */
@@ -288,12 +301,22 @@ export async function startRuntime(seed?: (store: Store) => void) {
     await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
+  async function restart() {
+    await runtime.stop()
+    const next = new Context()
+    for (const [name, service] of Object.entries(services)) next.reflect.provide(name, service)
+    runtime = new Runtime(next, testMachine({ stateDir: directory }), vi.fn())
+    if (options.gitlab) runtime.sources.register(gitlabKind)
+    else { runtime.sources.register(feishuKind); runtime.sources.register(githubKind) }
+    await runtime.ready
+    return runtime
+  }
   async function stop() { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }
   /** The Session's model takes its next step, which takes the messages steered in since its last. */
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
-  return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
-    jobs, subagents, step, claim }
+  return { get runtime() { return runtime }, restart, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
+    jobs, subagents, step, claim, reader, persistence }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

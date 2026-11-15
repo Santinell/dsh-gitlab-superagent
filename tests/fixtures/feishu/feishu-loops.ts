@@ -3,23 +3,26 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
-import { threadKey, type Thread, type Trigger } from '../core/index.ts'
+import { threadKey, type Thread, type Trigger } from '../../../src/core/index.ts'
 import { feishuChatLink } from './feishu-channel.ts'
-import type { FeishuBot } from '../deployment.ts'
-import { validItems, type Tally } from '../infra/commands.ts'
+import { feishuBot, type FeishuBot } from './types.ts'
+import { validItems, type Tally } from '../../../src/infra/commands.ts'
 import { readFeishu, type FeishuRef } from './feishu-read.ts'
 import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyEvent, HistoryPageSchema, SOURCE, topicEvent }
   from './feishu-trigger.ts'
-import { health, type SourceContext } from './host.ts'
-import { KV } from '../kv.ts'
-import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from './poll.ts'
+import { health, type Health, type SourceContext } from '../../../src/sources/host.ts'
+import { KV } from '../../../src/kv.ts'
+import { cursorAt, POLL_HORIZON_MS, polled, pollThreads as pollEach } from '../../../src/sources/poll.ts'
 import type { FeishuConfig } from './feishu.ts'
 
 export const runFeishu = (ctx: SourceContext, signal: AbortSignal): Promise<unknown> =>
   Promise.allSettled([watch, backfillLoop, chatNamesLoop].map(loop => loop(ctx, signal)))
 const enabled = (ctx: SourceContext): FeishuConfig | undefined => ctx.config<FeishuConfig>(SOURCE)
+/** Health the removed production Feishu loop reported, kept so tests can assert the same codes. */
+const waitingHealth = (code: 'feishuCliUnset' | 'feishuBotMissing'): Health => ({ state: 'paused', detail: code === 'feishuCliUnset'
+  ? 'The Source is on, and its bot lark-cli is not set' : 'Waiting for the Feishu bot', code: code as never })
 const bot = (ctx: SourceContext): FeishuBot => {
-  const resolved = ctx.deployment.feishu
+  const resolved = feishuBot(ctx.deployment)
   if (!resolved) throw new Error('The Feishu Source has no working bot CLI')
   return resolved
 }
@@ -31,10 +34,10 @@ async function receive(ctx: SourceContext, trigger: Trigger): Promise<void> {
   const chat = trigger.meta.direct === true ? { value: { zh: '私聊', en: 'Direct message' } } : { value: name }
   for (const ref of trigger.threads) ctx.threads.describe(threadKey(ref), { url: chatLink(ctx, chatId), facts: { chat } })
 }
-const chatLink = (ctx: SourceContext, chatId: string): string => feishuChatLink(ctx.deployment.feishu?.brand ?? 'feishu', chatId)
+const chatLink = (ctx: SourceContext, chatId: string): string => feishuChatLink(feishuBot(ctx.deployment)?.brand ?? 'feishu', chatId)
 function available(ctx: SourceContext): boolean {
-  if (ctx.configured() && ctx.deployment.feishu) return true
-  const waiting = health('paused', ctx.configured() ? 'feishuCliUnset' : 'setupPending')
+  if (ctx.configured() && feishuBot(ctx.deployment)) return true
+  const waiting = ctx.configured() ? waitingHealth('feishuCliUnset') : health('paused', 'setupPending')
   ctx.report('feishu', ctx.problem ? { state: 'paused', detail: ctx.problem.detail } : waiting)
   return false
 }
@@ -72,7 +75,8 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
   const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
-  let chain = Promise.resolve(); let diagnostic = ''; let ready = false
+  let chain = Promise.resolve(); let diagnostic = ''; let ready = false; let reportedError = false
+  const reportError = (detail: string) => { reportedError = true; ctx.report('feishu', { state: 'error', detail }) }
   const stop = (): void => { child.stdin.end(); child.kill('SIGTERM') }
   signal.addEventListener('abort', stop, { once: true })
   const timeout = setTimeout(() => { diagnostic = 'Feishu event consumer did not become ready within 45 seconds'; stop() }, 45_000)
@@ -80,8 +84,9 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     diagnostic = line.slice(0, 4000)
     if (line.startsWith('[event] ready')) {
       ready = true; clearTimeout(timeout)
-      ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
-    } else if (/WARN|drop|error/.test(line)) ctx.report('feishu', { state: 'error', detail: diagnostic })
+      // stdout and stderr are independent: a late ready line must not erase an event error.
+      if (!reportedError) ctx.report('feishu', { state: 'ready', detail: 'Listening for bot events', at: new Date().toISOString() })
+    } else if (/WARN|drop|error/.test(line)) reportError(diagnostic)
   })
   stdout.on('line', (line: string) => {
     chain = chain.then(async () => {
@@ -93,7 +98,7 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
       ctx.state.set(KV.feishu.chats, chats)
       await receive(ctx, trigger)
-    }).catch(error => { ctx.report('feishu', { state: 'error', detail: String(error) }) })
+    }).catch(error => { reportError(String(error)) })
   })
   try {
     await new Promise<void>((resolve, reject) => {
@@ -127,7 +132,7 @@ async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<v
 }
 async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
-  if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing')); return }
+  if (!available(ctx)) { ctx.report('history', waitingHealth('feishuBotMissing')); return }
   while (!signal.aborted) {
     const config = enabled(ctx)
     if (!config) {

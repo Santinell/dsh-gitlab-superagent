@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest'
 import { admissionContext, threadWindow } from '../src/sources/admission-context.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { feishuKind } from '../src/sources/feishu.ts'
+import { feishuKind } from './fixtures/feishu/feishu.ts'
 import type { ContextMessage } from '../src/sources/kind.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { SettingsSchema } from '../src/policy.ts'

@@ -1,9 +1,9 @@
 /** Feishu outbound channel: posts threaded bot replies and constructs chat deep links. */
-import type { OutboundMessage } from '../core/index.ts'
-import { CliError } from '../infra/commands.ts'
-import { checkedImText } from '../infra/text.ts'
-import type { SourceContext } from './host.ts'
-import type { ChannelLink, ChannelLinks } from './kind.ts'
+import type { OutboundMessage } from '../../../src/core/index.ts'
+import { CliError } from '../../../src/infra/commands.ts'
+import { checkedImText } from '../../../src/infra/text.ts'
+import type { SourceContext } from '../../../src/sources/host.ts'
+import type { ChannelLink, ChannelLinks } from '../../../src/sources/kind.ts'
 import { feishuTriggerId } from './feishu-trigger.ts'
 
 /** Feishu or Lark AppLink that opens a chat; used when the message's own link was not delivered with the event. */
@@ -30,6 +30,6 @@ export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message:
 }
 /** Fallback chat link on the bot's brand; the message's own deep link on its Trigger is preferred when available. */
 export const feishuLink = (address: Record<string, string>, links: ChannelLinks): ChannelLink => ({
-  url: feishuChatLink(links.feishu?.brand ?? 'feishu', address.chatId ?? ''), label: { zh: '飞书消息', en: 'Feishu message' },
+  url: feishuChatLink((links as ChannelLinks & { feishu?: { brand: 'feishu' | 'lark' } }).feishu?.brand ?? 'feishu', address.chatId ?? ''), label: { zh: '飞书消息', en: 'Feishu message' },
   ...address.messageId ? { triggerId: feishuTriggerId(address.messageId) } : {},
 })

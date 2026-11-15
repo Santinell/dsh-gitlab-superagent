@@ -42,7 +42,7 @@ it('reads the lists, a ticket, a decision, the settings, the prompts and the mod
   }
   expect(JSON.parse((await read('settings/policy') as { text: string }).text).value.sources.feishu.allowed).toEqual([{ id: 'ou_alice', name: 'Alice' }])
   await expect(read('settings/source:retired')).rejects.toThrow('Unknown settings block')
-  const skills = { built_in: ['dsh-superagent-feishu', 'dsh-superagent-github'], team: [] }
+  const skills = { built_in: ['dsh-superagent-gitlab'], team: [] }
   expect(await read('prompts')).toMatchObject({ revision: 0, read: 'prompts/0', skills, items: [expect.objectContaining({ revision: 0 })], next_offset: null })
   const models = [{ id: 'm1', name: 'One' }, { id: 'm2', name: 'Two' }]
   const catalog = { default: { provider: 'p', model: 'm1' }, groups: [{ id: 'p', name: 'Provider', models }], failures: [] }
@@ -345,11 +345,13 @@ it('reads a ticket with the ids it is tied to, its reports by assignment, and it
   expect(await read(`ticket/${ticket.id}/input/text:long`)).toMatchObject({ text: page.text })
   expect(await read(`ticket/${ticket.id}/inputs`, { offset: 20 })).toMatchObject({ items: expect.objectContaining({ length: 4 }), next_offset: null })
   expect(await read(details.assignments.items[0]!.report.read)).toMatchObject({ text: report(7).summary.slice(0, 4000) })
-  vi.mocked(h.controller.inspect).mockResolvedValueOnce({ events: [{ type: 'assistant/message', data: { message: { role: 'assistant',
+  h.reader.read.mockResolvedValueOnce({ events: [{ type: 'assistant/message', data: { message: { role: 'assistant',
     content: [{ type: 'text', text: `I fixed the margin. ${'Details. '.repeat(20)}` }] } } }] } as never)
   const transcript = JSON.parse((await read(`ticket/${ticket.id}/transcript`) as { text: string }).text) as { preview: string; read: string }
   expect(transcript).toMatchObject({ preview: expect.stringMatching(/^I fixed the margin\./), read: `ticket/${ticket.id}/message/0` })
   expect(transcript.preview.length).toBeLessThanOrEqual(80)
+  expect(h.persistence.open).toHaveBeenLastCalledWith(sessionId, 'read')
+  expect(h.reader[Symbol.asyncDispose]).toHaveBeenCalled()
 })
 
 it('reads a trigger once with the message it replies to and the messages around it on its thread, without the CI runs', async () => {

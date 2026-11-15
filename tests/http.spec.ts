@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { z } from 'zod'
-import { registerHttp } from '../src/app/http.ts'
+import { registerHttp, sameOrigin } from '../src/app/http.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
 import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
@@ -9,6 +9,10 @@ import { SetupError } from '../src/setup.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
+
+it('refuses management requests before the Web server has bound a port', () => {
+  expect(sameOrigin({ headers: { host: '127.0.0.1:undefined', 'x-orchestrator-request': '1' } }, undefined)).toBe(false)
+})
 /** Mount management HTTP routes on a fake web server and return a request helper that includes default panel headers. */
 function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.0.1') {
   let handler: Handler = async () => {}

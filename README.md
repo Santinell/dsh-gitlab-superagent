@@ -1,39 +1,33 @@
-# dsh-superagent
+# dsh-gitlab-superagent
 
-> **Research prototype for reference only, not an official DeepSeek product.** This code grew out of our team's day-to-day development work, with much of the engineering done by coding agents. Treat it as research code, not production-ready software. It may still contain bugs, and its coding style and engineering practices may be inconsistent. Review and adapt it before using it in your own environment.
->
-> We have adapted it for publication, so it is not identical to our internal version or the implementation described in *Exploring Super-agent Design: Towards a More Autonomous Agent System*. Some designs discussed in the article are directions for future development and are not implemented in this prototype.
+An independent GitLab fork of the dsh-superagent research prototype, packaged as a bundle for DeepSeek Harness. The npm package is `dsh-gitlab-superagent`; the Cordis plugin ID, panel namespace and worker/router presets remain `dsh-superagent`.
 
-dsh-superagent is a proactive coding agent for one GitHub repository, packaged as a bundle for [DeepSeek Harness](https://www.deepseek.com/en/harness/). It listens to GitHub and, optionally, Feishu. When someone allowed asks the agent for work, it opens a work item, works on it in its own agent session and directory, and answers in the original conversation, for example with a pull request. A web panel shows what needs a person.
+The agent works on **one GitLab project** as a dedicated account. An allowed person's `@mention` in an Issue or MR can create a Ticket. Each Ticket runs in its own Session and directory, answers in its originating conversation and can open an MR. The panel shows work waiting for a person, source health, policy and execution state.
 
-It is also a way of working with an agent: **take as little human attention as possible, and give as much value as possible.** An agent that can act for a whole team can also waste a whole team's attention, so it acts only when asked or when a rule the team wrote allows it, and speaks only when someone must act or can use a result. [docs/000-philosophy.md](docs/000-philosophy.md) explains the principle and what it asks of the operator.
+Intake uses the agent's TODOs plus observed streams and subscribed discussions. Issue `#1` and MR `!1` have separate keys (`gitlab:issue:1`, `gitlab:mr:1`). CI changes are based on failing jobs, not pipeline IDs. Approvals and auto-merge status are facts: **a person merges every MR; the agent never merges or enables auto-merge**.
 
-## Setup
+The supported target is self-managed GitLab **19.2.9+ Free**, with GitLab.com as the secondary smoke target. Use Node.js 26.x, pnpm matching `package.json`, git 2.32+, stable `glab`, and DeepSeek Harness in the declared engine range. Installation/service control requires a POSIX host, Python 3.8+, tmux and a configured DSH model provider.
 
-Setup has many steps, so an agent does it with you. Ask your coding agent:
+Start with [SETUP.md](SETUP.md). For a coding agent: read it and follow the setup interview with the operator. For an operator: the detailed install, env-token wrapper, local management API and troubleshooting are in [006 Deployment](docs/006-deployment.md). No published npm release is assumed: build and install a local tarball.
 
-> Read SETUP.md in this repository and set up dsh-superagent with me.
+## Guide
 
-It asks one short question at a time, shows the full plan once, and then installs and configures everything. [SETUP.md](SETUP.md) is what it follows.
+- [000 Philosophy](docs/000-philosophy.md): conserve human attention; start narrow and own what the agent says.
+- [001 Domain model](docs/001-domain.md) and [002 Authorization](docs/002-authorization.md): Triggers, Tickets, Mandates and policy.
+- [003 Execution](docs/003-execution.md), [004 Prompts](docs/004-prompts.md), [005 Panel](docs/005-panel.md): work, instructions and operations.
+- [006 Deployment](docs/006-deployment.md), [007 Architecture](docs/007-architecture.md), [008 Cookbook](docs/008-cookbook.md): install, code index and extension points.
+- [UPSTREAM](docs/UPSTREAM.md): fixture evidence, deliberate divergences and remaining live checks.
 
-## Documentation
+Use a **new state directory**. GitHub installations and schema versions below 11 are refused; state migration from that upstream product is unsupported. GitHub and Feishu are not active sources in this fork. Their remaining legacy code/test fixtures are scheduled for removal in P7 and do not provide a supported installation path.
 
-Read the numbered documents in order; each builds only on the ones before it.
+The source repository is [Santinell/dsh-gitlab-superagent](https://github.com/Santinell/dsh-gitlab-superagent), forked from [DeepSeek's prototype](https://github.com/deepseek-ai/dsh-superagent-prototype). Those are source-history links, not supported target code hosts. This remains research software, not an official DeepSeek product. Review it for your environment.
 
-- [000 Philosophy](docs/000-philosophy.md)
-- [001 Domain model](docs/001-domain.md)
-- [002 Authorization](docs/002-authorization.md)
-- [003 Execution](docs/003-execution.md)
-- [004 Prompts](docs/004-prompts.md)
-- [005 Panel](docs/005-panel.md)
-- [006 Deployment](docs/006-deployment.md): manual setup, configuration, upgrades and troubleshooting
-- [007 Architecture](docs/007-architecture.md)
-- [008 Cookbook](docs/008-cookbook.md): adding a Source
+## Local validation
 
-## Development
+```sh
+pnpm install --frozen-lockfile
+pnpm check
+pnpm pack --pack-destination .artifacts
+```
 
-`pnpm check` runs the typecheck, the tests and the build.
-
-## License
-
-[MIT](LICENSE)
+Local tests and tarball inspection do not establish a live GitLab deployment. The self-managed installation/Issue → MR → CI → human merge smoke and the GitLab.com smoke remain required before release. Real 429 behavior and custom TLS/proxy setups are not claimed as verified.

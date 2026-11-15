@@ -1,12 +1,13 @@
 /** SQLite persistence for domain aggregates, key-value state, settings history, and the channel outbox. */
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, type ReplyStatus, type Repositories, type Thread, type ThreadFact,
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { KV, type Family, type Key } from '../kv.ts'
 import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave } from '../policy.ts'
 import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, tooOld } from './migration.ts'
+import { SetupError } from '../setup.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
 
@@ -43,6 +44,29 @@ const SETS: Record<string, Record<string, string>> = {
     AND value ->> '$.ticketId' IS NOT NULL THEN (value ->> '$.ticketId') || ' ' || (value ->> '$.channel.thread') END)` },
 }
 export { SCHEMA_VERSION }
+/** Check an existing database before Runtime opens a writable Store that could migrate legacy state. */
+export function assertCurrentSchema(path: string): void {
+  if (!existsSync(path)) return
+  const db = new DatabaseSync(path, { readOnly: true })
+  try {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kv'").get()) return
+    const row = db.prepare('SELECT value FROM kv WHERE key=?').get(KV.store.schema)
+    const version: unknown = row ? JSON.parse(String(row.value)) : undefined
+    if (typeof version === 'number' && version < SCHEMA_VERSION) {
+      throw new Error(`Orchestrator database schema ${version} is unsupported for GitLab; start with a new state directory`)
+    }
+    if (typeof version === 'number' && version > SCHEMA_VERSION) throw new Error(`Unsupported orchestrator database version ${version}`)
+    const pointer = db.prepare('SELECT value FROM kv WHERE key=?').get(KV.settings.revision)
+    if (pointer) {
+      const revision = JSON.parse(String(pointer.value)) as number
+      const snapshot = db.prepare('SELECT value FROM kv WHERE key=?').get(KV.settings.version(revision))
+      if (snapshot) {
+        const saved = JSON.parse(String(snapshot.value)) as { settings?: { sources?: Record<string, unknown> } }
+        if (saved.settings?.sources && Object.hasOwn(saved.settings.sources, 'github')) throw new SetupError('stateDirUnsupported')
+      }
+    }
+  } finally { db.close() }
+}
 /**
  * SQLite backing store implementing domain `Repositories`, view read queries, versioned settings, outbox receipts, and key-value state.
  * The Runtime opens it after locking the state directory and automatically migrates supported older schemas on startup.

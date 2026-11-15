@@ -6,7 +6,6 @@ import { basename } from 'node:path'
 import { z } from 'zod'
 import { isoTime, said, type AcceptMode, type AdmissionCell, type ChannelRef, type Decision, type Execution, type Follow, type MandateBasis,
   type Reason, type Thread, type Ticket, type TicketInput, type TriggerDisposition } from '../core/index.ts'
-import { feishuChatLink } from '../sources/feishu-channel.ts'
 import { POLL_HORIZON_MS } from '../sources/poll.ts'
 import { SettingsSchema, policyVersion, type SettingsOrigin } from '../policy.ts'
 import { autoMergeThreshold, teamDefaults } from './context.ts'
@@ -64,7 +63,7 @@ export function migrateTo11(store: Store): void {
     store.delete(name)
   }
   for (const name of DEAD_KEYS.flatMap(prefix => prefix.endsWith(':') ? store.keys(prefix) : [prefix])) store.delete(name)
-  // Source read pages, prompt previews, and Feishu message links are now cached in memory instead of SQLite.
+  // Source read pages, prompt previews, and legacy chat message links are now cached in memory instead of SQLite.
   store.db.exec(`DELETE FROM kv WHERE key LIKE 'feishu-read:%' OR key LIKE 'github-read:%' OR key LIKE 'feishu-source-link:%'
     OR key LIKE '%:prompt-preview/%'`)
   queueEarlierWork(store)
@@ -250,6 +249,8 @@ function withoutRemovedFields(value: Stored): Stored {
 const LegacyPromptConfigSchema = z.object({ shared: z.string(), orchestrator: z.string(), worker: z.string(), guides: z.record(z.string(), z.string()) })
 /** Guide names from legacy prompt configurations that are now fixed built-in prompt sections or skills. */
 const LEGACY_FIXED = new Set(['cli', 'subscriptions', 'replies', 'reviews', 'dispatch', 'work', 'feishu', 'github'])
+const chatLink = (brand: 'feishu' | 'lark', chatId: string): string =>
+  `https://applink.${brand === 'lark' ? 'larksuite.com' : 'feishu.cn'}/client/chat/open?openChatId=${encodeURIComponent(chatId)}`
 /** Tool names used in saved prompts before the domain vocabulary rename, paired with what replaces them now. */
 const RENAMED_TOOLS: readonly (readonly [string, string])[] = [
   ['orchestrator_subscription_remove', 'orchestrator_thread_unsubscribe'], ['orchestrator_subscriptions', 'orchestrator_threads'],
@@ -321,7 +322,7 @@ function migratePrompts(store: Store): void {
   const delivery = config.delivery.includes(autoMergeThreshold(200)) ? config.delivery.replace(autoMergeThreshold(200), autoMergeThreshold(limit))
     : limit === 200 ? config.delivery : `${config.delivery}\nEnable auto-merge only on a PR that changes fewer than ${limit} lines (additions plus deletions).`
   const identities = mapped.length && !config.skills.identities ? { identities: ['The same colleague may use a different account on each Source. When you mention, assign or request a review from someone you met on another Source, use their account on this one:',
-    ...mapped.map(person => `- ${person.name ?? person.feishuId} (Feishu ${person.feishuId}) is @${person.github} on GitHub`)].join('\n') } : {}
+    ...mapped.map(person => `- ${person.name ?? person.feishuId} (chat ${person.feishuId}) is @${person.github} on GitHub`)].join('\n') } : {}
   const next = { ...config, delivery, skills: { ...config.skills, ...identities } }
   if (JSON.stringify(next) === JSON.stringify(config)) return
   const previous = current?.revision ?? 0
@@ -333,14 +334,14 @@ function migratePrompts(store: Store): void {
 const CELLS: readonly string[] = ['listedUnaddressed', 'unlistedAddressed', 'unlistedUnaddressed']
 /**
  * Upgrade a legacy mandate basis object to the current tagged union shape.
- * Current bases recorded `source` and `scope`; older ones recorded a Feishu chat directly (`chatId`) or schema 6's `legacyAuthority`.
+ * Current bases recorded `source` and `scope`; older ones recorded a chat directly (`chatId`) or schema 6's `legacyAuthority`.
  * A basis with neither an admission table cell nor `followup` came from a listed sender (`addressed` when it recorded `addressed`, `sender`, and `source`, else `listed`), which holds while the sender remains listed.
  */
 export function basisOf(stored: unknown): MandateBasis {
   // Missing or non-object bases default to a listed-sender basis (`via: 'listed'`).
   const old = isObject(stored) ? stored : {}
   if (typeof old.via === 'string') return old as unknown as MandateBasis
-  // Older Feishu bases recorded `chatId` and `direct` at the top level instead of inside `scope`.
+  // Older chat bases recorded `chatId` and `direct` at the top level instead of inside `scope`.
   const chat = text(old.chatId) ? { source: 'feishu', scope: { chatId: old.chatId, direct: old.direct === true } } : {}
   const received = text(old.source) ? { source: old.source as string, ...isObject(old.scope) ? { scope: old.scope } : {}, ...text(old.row) ? { row: old.row as string } : {} } : chat
   const sender = text(old.sender) ?? text(old.member)
@@ -517,7 +518,7 @@ function backfillThreadTimes(store: Store): void {
   }
 }
 
-/** Upgrade stored source state (Feishu topics, direct-chat flags, thread links, GitHub cursors, and pending assessments) to schema 11. */
+/** Upgrade stored source state (chat topics, direct-chat flags, thread links, GitHub cursors, and pending assessments) to schema 11. */
 function migrateSourceRecords(store: Store): void {
   feishuTopics(store)
   feishuDirectAddresses(store)
@@ -526,7 +527,7 @@ function migrateSourceRecords(store: Store): void {
   githubCursors(store)
   assessmentTriggers(store)
 }
-/** Convert legacy Feishu topic ID arrays into maps keyed by topic ID with the chat's last recovery timestamp. */
+/** Convert legacy chat topic ID arrays into maps keyed by topic ID with the chat's last recovery timestamp. */
 function feishuTopics(store: Store): void {
   for (const name of store.keys(KV.feishu.topics)) {
     const topics: unknown = store.get(name)
@@ -536,7 +537,7 @@ function feishuTopics(store: Store): void {
   }
 }
 /**
- * Backfill `direct: 'true'` onto Feishu channel addresses from `KV.feishu.chats`, because Feishu `oc_` chat IDs do not
+ * Backfill `direct: 'true'` onto legacy chat channel addresses from `KV.feishu.chats`, because `oc_` chat IDs do not
  * distinguish direct messages from group chats on their own.
  */
 function feishuDirectAddresses(store: Store): void {
@@ -558,14 +559,14 @@ function feishuDirectAddresses(store: Store): void {
     if (ticket.channels.some(direct)) store.tickets.save({ ...ticket, channels: ticket.channels.map(marked) })
   }
 }
-/** Backfill chat URLs onto Feishu threads created before threads stored their own URL, inferring the brand from existing trigger URLs. */
+/** Backfill chat URLs onto legacy chat threads created before threads stored their own URL, inferring the brand from existing trigger URLs. */
 function feishuThreadLinks(store: Store): void {
   const lark = store.db.prepare(`SELECT 1 FROM trigger WHERE value ->> '$.source' = 'feishu'
     AND value ->> '$.url' LIKE '%larksuite.com%' LIMIT 1`).get()
   for (const thread of store.threads.list()) {
     if (thread.ref.source !== 'feishu' || typeof thread.meta.url === 'string' || store.read.firstTrigger(thread.key)?.url) continue
     const chatId = thread.ref.id.split(':')[0]
-    if (chatId) store.threads.save({ ...thread, meta: { ...thread.meta, url: feishuChatLink(lark ? 'lark' : 'feishu', chatId) } })
+    if (chatId) store.threads.save({ ...thread, meta: { ...thread.meta, url: chatLink(lark ? 'lark' : 'feishu', chatId) } })
   }
 }
 /**

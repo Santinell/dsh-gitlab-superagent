@@ -30,7 +30,7 @@ import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
 export interface HttpHost {
   readonly store: Store
-  /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
+  /** Source message links resolved since startup, used by search to match their URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
@@ -46,7 +46,6 @@ export interface HttpHost {
   /** Resolved deployment; throws if read while waiting for setup (`!configured()`). */
   readonly deployment: Deployment
   readonly setupProblem?: SetupProblem | undefined
-  readonly feishuProblem?: SetupProblem | undefined
   configured(): boolean
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
@@ -72,7 +71,8 @@ async function readBody(req: IncomingMessage, maxBytes = 128 * 1024): Promise<un
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value))
 }
-export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
+export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number | undefined): boolean {
+  if (port === undefined) return false
   const host = req.headers.host
   if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return false
   return req.headers['x-orchestrator-request'] === '1' && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
@@ -97,8 +97,9 @@ function machineView({ stateDir, promptMaxChars, admissionContextMaxPages, admis
 function setupView(runtime: HttpHost) {
   const resolved = runtime.configured() ? runtime.deployment : undefined
   return {
-    machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+    machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null,
+    accounts: resolved ? { repository: resolved.repository, project: resolved.project?.path ?? resolved.repository, agent: resolved.codeHost?.login ?? resolved.github.login,
+      ...resolved.codeHost ? { host: resolved.codeHost.host, cli: resolved.codeHost.cli } : {} } : null,
   }
 }
 /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
@@ -110,7 +111,7 @@ export function stateView(runtime: HttpHost) {
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
-  problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
+  problem: runtime.setupProblem })
 export type StateView = ReturnType<typeof stateView>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
 function ticketPage(runtime: HttpHost, id: string) {
@@ -155,7 +156,7 @@ function routes(runtime: HttpHost): Routes {
   return {
     'GET state': () => stateView(runtime),
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
-      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
+      executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
     'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),

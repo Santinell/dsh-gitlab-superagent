@@ -5,7 +5,8 @@
 import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
 import type { SettingsSave } from './policy.ts'
-import type { Retry } from './sources/github.ts'
+import type { GitlabTodo } from './sources/gitlab-trigger.ts'
+import type { Retry } from './sources/retry.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -36,7 +37,7 @@ export const KV = {
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },
-  /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
+  /** Per-Source resolved display names mapping a named ID (such as a chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
   /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
@@ -49,8 +50,18 @@ export const KV = {
     branchCi: record<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
     ci: family<{ fingerprint: string; revision: number }, [number: number]>('github-ci:') },
   /**
-   * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
-   * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
+   * GitLab Source: pending-TODO cursor and failed target reads; per-Issue/MR read cursor shared by TODO and polled reads;
+   * per-stream cursor and start time; default-branch pipeline state; and per-MR pipeline fingerprint and revision
+   * (`revision` counts reported CI changes so each produces a distinct Trigger ID).
+   */
+  gitlab: { todos: record<string>('gitlab-todos'), retries: record<Record<string, Retry & { todos?: GitlabTodo[] }>>('gitlab-retry'),
+    cursor: family<string, [kind: 'issue' | 'mr', iid: number]>('gitlab-cursor:', (kind, iid) => `${kind}:${iid}`),
+    stream: family<{ since: string; started: string }, [stream: string]>('gitlab-stream:'),
+    branchPipeline: record<{ branch?: string; failures?: string[]; revision: number; sha?: string }>('gitlab-branch-pipeline'),
+    pipeline: family<{ fingerprint: string; revision: number }, [number: number]>('gitlab-pipeline:') },
+  /**
+   * Legacy chat Source (removed; kept for the schema-11 migration until P7): known chats, history cursor and active topics,
+   * and per-polled-thread seen message IDs and initialization flag.
    */
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),

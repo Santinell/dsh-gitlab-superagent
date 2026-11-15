@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, GitlabAccountsSchema, machineOf, resolveDeployment, resolveGitlabDeployment, SETUP_FIELDS, type Machine, type Probe } from '../src/deployment.ts'
+import { Setup } from '../src/app/setup.ts'
+import { SettingsSchema } from '../src/policy.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -13,9 +15,14 @@ let path: string
 const program = (file: string, body = ''): string => { writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file }
 /** Fake gh CLI signed in as `login` with configurable push access to acme/widgets (including its former name acme/gadgets). */
 const gh = (file: string, login: string, push = true): string => program(file, `case "$*" in\n  "api user") echo '{"login":"${login}","id":7}' ;;\n  "api repos/acme/"*" --jq {name: .full_name, push: .permissions.push}") echo '{"name":"acme/widgets","push":${push}}' ;;\n  *) exit 1 ;;\nesac`)
-/** Fake lark-cli script body returning canned auth, strict-mode, and bot info responses. */
-const lark = (status: object, mode = 'bot', bot: object = { bot: { open_id: 'ou_bot', app_name: 'Widgets Bot' }, code: 0 }): string =>
-  `case "$*" in\n  "auth status") echo '${JSON.stringify(status)}' ;;\n  "config strict-mode") echo 'strict-mode: ${mode} (source: profile)' ;;\n  "api GET /open-apis/bot/v3/info --as bot --format ndjson") echo '${JSON.stringify(bot)}' ;;\nesac`
+const user = { id: 7, username: 'agent', commit_email: 'agent@example.com', web_url: 'https://gitlab.example.com/agent' }
+/** Fake glab CLI signed in as the agent account, with configurable user fields and project access. */
+const glab = (name: string, options: { user?: Record<string, unknown>; access?: number } = {}): string => {
+  const account = { ...user, ...options.user }
+  const project = { id: 25, path_with_namespace: 'acme/widgets', web_url: 'https://gitlab.example.com/acme/widgets', default_branch: 'main',
+    permissions: { project_access: { access_level: options.access ?? 30 }, group_access: null } }
+  return program(join(dir, 'bin', name), `case "$*" in\n  "api user") echo '${JSON.stringify(account)}' ;;\n  "api projects/"*) echo '${JSON.stringify(project)}' ;;\n  *) exit 1 ;;\nesac`)
+}
 const minimal = (overrides: Record<string, unknown> = {}) => ({ stateDir: join(dir, 'state'), ...overrides })
 const machine = (overrides: Partial<Machine> = {}): Machine => ({ ...machineOf(Config(minimal())), ...overrides })
 /** Runs commands like worker shells do, but locally: the stand-ins first on PATH, then the system's git. */
@@ -27,7 +34,6 @@ beforeEach(async () => {
   mkdirSync(join(dir, 'bin')); mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true }); mkdirSync(join(dir, 'widgets', 'src'), { recursive: true })
   path = [join(dir, 'state-link', 'worker-bin'), `${join(dir, 'state', 'worker-bin')}/`, join(dir, 'bin'), '/usr/bin', '/bin'].join(':')
   gh(join(dir, 'bin', 'gh'), 'Agent-Bot')
-  program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', brand: 'lark', identities: { bot: { status: 'ready' } } }))
   // Stale worker shims with the same binary name must be skipped regardless of PATH normalization or symlinks.
   program(join(dir, 'state', 'worker-bin', 'gh'))
   symlinkSync(join(dir, 'state'), join(dir, 'state-link'))
@@ -83,19 +89,54 @@ describe('setup', () => {
     await needs('github', 'agentCliNoAccount', {}, { repository, cli: program(join(dir, 'bin', 'gh-anonymous'), `echo '{}'`) })
     expect(() => executable('nothing-here', join(dir, 'bin'))).toThrow('nothing-here is not an executable file on PATH')
   })
-  it('reads the Feishu bot from a bot-only lark-cli, or finds none when the Feishu Source names no CLI', async () => {
-    expect(await resolveFeishuBot(machine(), {}, probe, path)).toBeUndefined()
-    expect(await resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).toEqual({ cli: join(dir, 'bin', 'lark-cli'), appId: 'cli_bot', brand: 'lark', botId: 'ou_bot', name: 'Widgets Bot' })
-    const refuses = async (code: string, values: Record<string, unknown> = {}) => expect(resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, path)).rejects.toEqual(setupError('feishu', code, values))
-    program(join(dir, 'bin', 'lark-cli'), lark({ identities: { bot: { status: 'ready' } } }))
-    await refuses('feishuNoApp')
-    program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', identities: { bot: { status: 'missing' } } }))
-    await refuses('feishuBotNotReady', { app: 'cli_bot', status: 'missing' })
-    program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', identities: { bot: { status: 'ready' } } }, 'off'))
-    await refuses('feishuUserIdentity', { mode: 'off' })
-    program(join(dir, 'bin', 'lark-cli'), lark({ appId: 'cli_bot', identities: { bot: { status: 'ready' } } }, 'bot', { code: 0, data: {} }))
-    await refuses('feishuNoBot')
-    program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
-    await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  it('resolves the project, account, commit email and host-pinned code host', async () => {
+    const cli = glab('glab')
+    const deployment = await resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli, host: 'gitlab.example.com' }, probe, path)
+    expect(deployment).toMatchObject({ repository: 'acme/widgets', project: { id: 25, path: 'acme/widgets', defaultBranch: 'main' },
+      github: { cli, login: 'agent', noreply: 'agent@example.com' } })
+    expect(deployment.codeHost).toEqual({ kind: 'gitlab', host: 'gitlab.example.com', apiBase: 'https://gitlab.example.com/api/v4',
+      webBase: 'https://gitlab.example.com', cli, login: 'agent', userId: 7, commitEmail: 'agent@example.com' })
+    expect(SETUP_FIELDS.gitlab).toEqual(['project', 'cli', 'host'])
   })
+
+  it('falls back to the GitLab private commit email format when the user API omits it', async () => {
+    const cli = glab('glab-no-email', { user: { ...user, commit_email: null } })
+    const deployment = await resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli, host: 'gitlab.example.com' }, probe, path)
+    expect(deployment.codeHost?.commitEmail).toBe('7-agent@users.noreply.gitlab.example.com')
+  })
+
+  it('refuses to add GitLab to a state directory that still has a GitHub Source', async () => {
+    const setup = new Setup({ context: {} as never, machine: machine(), lifetime: new AbortController().signal, restart: vi.fn() })
+    const settings = SettingsSchema.parse({ sources: {
+      github: { enabled: true, config: { repository: 'acme/widgets', cli: 'gh' } },
+      gitlab: { enabled: true, config: { project: 'acme/widgets', cli: 'glab', host: 'gitlab.example.com' } } } })
+    expect(await setup.run(settings)).toBe(false)
+    expect(setup.problem).toMatchObject({ place: 'deployment', code: 'stateDirUnsupported' })
+  })
+
+  it('names each missing or mismatched GitLab input', async () => {
+    await expect(resolveGitlabDeployment(machine(), { cli: 'glab' }, probe, path)).rejects.toEqual(setupError('gitlab', 'projectUnset'))
+    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets' }, probe, path)).rejects.toEqual(setupError('gitlab', 'gitlabCliUnset'))
+    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: join(dir, 'missing'), host: 'gitlab.example.com' }, probe, path))
+      .rejects.toEqual(setupError('gitlab', 'gitlabCliMissing', { output: expect.stringContaining('not an executable file') }))
+    program(join(dir, 'bin', 'glab-broken'), 'exit 1')
+    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: join(dir, 'bin', 'glab-broken'), host: 'gitlab.example.com' }, probe, path))
+      .rejects.toEqual(setupError('gitlab', 'gitlabCliSignedOut', { output: expect.stringContaining('glab-broken') }))
+    program(join(dir, 'bin', 'glab-anonymous'), `echo '{}'`)
+    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: join(dir, 'bin', 'glab-anonymous'), host: 'gitlab.example.com' }, probe, path))
+      .rejects.toEqual(setupError('gitlab', 'gitlabCliNoAccount'))
+    const foreign = glab('glab-foreign', { user: { ...user, web_url: 'https://gitlab.com/agent' } })
+    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: foreign, host: 'gitlab.example.com' }, probe, path))
+      .rejects.toEqual(setupError('gitlab', 'projectHostMismatch', { host: 'gitlab.example.com', actual: 'gitlab.com' }))
+    const readonly = glab('glab-reader', { access: 20 })
+    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: readonly, host: 'gitlab.example.com' }, probe, path))
+      .rejects.toEqual(setupError('gitlab', 'projectReadOnly', { account: 'agent', project: 'acme/widgets' }))
+  })
+})
+
+it.each([true, false])('rejects an old GitHub-only setup before any CLI probe, enabled=%s', async enabled => {
+  const setup = new Setup({ context: {} as never, machine: machine(), lifetime: new AbortController().signal, restart: vi.fn() })
+  const settings = SettingsSchema.parse({ sources: { github: { enabled, config: { repository: 'acme/widgets', cli: 'gh' } } } })
+  expect(await setup.run(settings)).toBe(false)
+  expect(setup.problem).toMatchObject({ code: 'stateDirUnsupported', place: 'deployment' })
 })

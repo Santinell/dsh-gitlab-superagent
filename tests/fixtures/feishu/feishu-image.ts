@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-llm'
 import { z } from 'zod'
-import type { Commands } from '../infra/commands.ts'
+import type { Commands } from '../../../src/infra/commands.ts'
 import type { FeishuRef } from './feishu-read.ts'
 
 /** Extracts Feishu image keys from message text so keys remain paired with the originating message; arbitrary remote IDs are not accepted. */

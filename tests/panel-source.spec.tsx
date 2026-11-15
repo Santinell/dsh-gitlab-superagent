@@ -22,7 +22,7 @@ it('shows each Source\'s state on the Source status and opens its settings from 
   await click(zh.sourceOpenSettings)
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
-  expect(all('.dt-card')[1]!.textContent).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
+  expect(all('.dt-card')[1]!.textContent).toContain('部署检查未通过：The agent GitHub CLI is not set.')
 })
 
 it('folds more than six chats into a line of their names', async () => {
@@ -127,19 +127,19 @@ it('points a setup problem at the settings that fix it', async () => {
   Element.prototype.scrollIntoView = scroll
   await mount()
   expect(text()).toContain(zh.problemSetup)
-  expect(text()).toContain(zh['setup.agentCliUnset'])
+  expect(text()).toContain('The agent GitHub CLI is not set.')
   // Nothing runs while setup waits, so the Executor says so instead of counting.
   expect(text()).toContain(zh.executorWaitingSetup)
   expect(all('.dt-stat').map(stat => stat.textContent)).not.toContain('执行中2 / 3')
-  expect(text()).toContain('在设置 › 来源的 GitHub 卡片修正后保存，会重新检查')
+  expect(text()).toContain('在部署设置里修正后保存，会重新检查')
   await click(find(zh.problemSetup, 'button, a, [role="button"]'))
   expect(tab(zh['tab.settings']).getAttribute('aria-selected')).toBe('true')
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
-  expect(all('.dt-card')[1]!.textContent).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
+  expect(all('.dt-card')[1]!.textContent).toContain('部署检查未通过：The agent GitHub CLI is not set.')
   expect(scroll.mock.contexts).toContain(all('.dt-card')[1])
   delete (Element.prototype as Partial<Element>).scrollIntoView
   await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
-  expect(text()).toContain('部署检查未通过：没有设置智能体的 GitHub CLI。')
+  expect(text()).toContain('部署检查未通过：The agent GitHub CLI is not set.')
   // After a fix outside dsh-superagent, a check runs setup again.
   await click(zh.setupCheck)
   expect(server.requests.filter(request => request.path === 'setup/check')).toEqual([{ path: 'setup/check', method: 'POST' }])
@@ -149,37 +149,17 @@ it('points a setup problem at the settings that fix it', async () => {
   await click(zh['tab.overview'])
   await click(find(zh.problemSetup, 'button, a, [role="button"]'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
-  expect(text()).toContain('部署检查未通过：git 没有读取 dsh-superagent 为 github.com 写的凭据配置')
-})
-
-it('shows a failed Feishu bot check as a problem of the Feishu Source only, with a check after a fix outside dsh-superagent', async () => {
-  server.setup = { ...server.setup, feishuProblem: problemOf('feishuBotNotReady', { app: 'cli_bot', status: 'missing' }),
-    accounts: { ...server.setup.accounts!, feishu: null } }
-  await mount()
-  expect(text()).toContain(zh.problemSetupFeishu)
-  expect(text()).not.toContain('飞书 来源异常')
-  await click(find(zh.problemSetupFeishu, 'button, a, [role="button"]'))
-  const feishu = all('.dt-card')[0]!
-  expect(feishu.textContent).toContain('部署检查未通过：应用 cli_bot 的机器人身份状态是 missing；用 lark-cli 配置应用密钥。')
-  // dsh-superagent runs meanwhile, so checking again asks first: the restart interrupts running Executor Sessions.
-  await click([...feishu.querySelectorAll('button')].find(button => button.textContent === '重新检查')!)
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('重新检查会重启 dsh-superagent：2 个进行中的派工会中断')
-  expect(server.requests.some(request => request.path === 'setup/check')).toBe(false)
-  await click(zh.confirm)
-  expect(server.requests.some(request => request.path === 'setup/check')).toBe(true)
-  await click(tab(zh['tab.source']))
-  // The Source's state carries the problem once, not again as its health.
-  expect(all('.dt-form > .dt-list > .dt-row')[0]!.textContent?.match(/cli_bot 的机器人身份状态是 missing/g)).toHaveLength(1)
+  expect(text()).toContain('部署检查未通过：git does not read the github.com credential configuration')
 })
 
 it('leaves Feishu out of a GitHub-only deployment', async () => {
-  server.setup = { ...server.setup, accounts: { ...server.setup.accounts!, feishu: null } }
+  server.setup = { ...server.setup, accounts: { ...server.setup.accounts! } }
   server.settings = { ...server.settings, sources: { ...server.settings.sources, feishu: { enabled: false, config: {} } } }
   at({ page: 'settings', query: { group: 'prompts' } })
   await mount()
   await click(tab(zh.promptViewFull))
   expect([...field<HTMLSelectElement>(zh.promptPreviewTarget).options].map(option => option.textContent)).toEqual(['主 Session',
-    '执行器 Session', 'dsh-superagent-github'])
+    '执行器 Session', 'dsh-superagent-gitlab'])
 })
 
 it('shows the Sources waiting for the deployment check, and the problem on the Source that fixes it, with its link', async () => {
@@ -190,7 +170,7 @@ it('shows the Sources waiting for the deployment check, and the problem on the S
   // The GitHub Source is where the problem is fixed, so it shows the error; Feishu waits.
   expect(rows.map(row => row.querySelector('.dt-status-text')?.textContent)).toEqual(['等待部署检查', '出错'])
   expect(text()).not.toContain('Waiting for setup')
-  expect(rows[1]!.textContent).toContain('部署检查未通过：GitHub 来源没有设置监听的仓库。')
+  expect(rows[1]!.textContent).toContain('部署检查未通过：The GitHub Source names no repository.')
   await click(find(zh.sourceOpenSettings, '.dt-row button'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['term.source'])
 })
@@ -201,20 +181,10 @@ it('shows a Source\'s health in the interface language, and a diagnostic as repo
   await mount()
   await click(zh['tab.source'])
   const github = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === 'GitHub')!
-  expect(github.textContent).toContain('GitHub 来源：连续 3 次轮询失败，最近一次：EOF')
+  expect(github.textContent).toContain('github：连续 3 次轮询失败，最近一次：EOF')
   expect(github.textContent).not.toContain('consecutive')
   const feishu = all('.dt-form > .dt-list > .dt-row').find(row => row.querySelector('.dt-row-name')?.textContent === '飞书')!
   expect(feishu.querySelector('.dt-mono')?.textContent).toBe('socket closed')
-})
-
-it('shows a refused Source save with the output of the tool that failed on its own line', async () => {
-  await mount()
-  await click(zh['tab.source'])
-  await click(find(zh['tab.settings'], '.dt-status-head button'))
-  const feishu = all('.dt-card')[0]!
-  await type(field<HTMLInputElement>('机器人的 lark-cli'), 'lark-broken')
-  await act(async () => { feishu.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
-  expect(feishu.querySelector('.dt-savebar [role="alert"]')?.textContent).toBe('机器人的 lark-cli 不可用。\nlark-cli: app secret missing')
 })
 
 it('shows a setup problem on its Source card within one read of the settings, which the settings groups share', async () => {
@@ -223,13 +193,13 @@ it('shows a setup problem on its Source card within one read of the settings, wh
   at({ page: 'settings', query: { group: 'source' } })
   await mount()
   const card = () => document.getElementById('dt-source-github')!
-  expect(card().textContent).not.toContain(zh['setup.agentCliUnset'])
+  expect(card().textContent).not.toContain('The agent GitHub CLI is not set.')
   server.setup = { ...server.setup, problem: problemOf('agentCliUnset') }
   // The settings are read every five seconds, as the state is; the Source settings do not read the Source status.
   await act(async () => { await vi.advanceTimersByTimeAsync(5000) }); await settle()
   expect(server.requests.filter(request => request.path === 'settings')).toHaveLength(2)
   expect(server.requests.some(request => request.path === 'sources')).toBe(false)
-  expect(card().textContent).toContain(zh['setup.agentCliUnset'])
+  expect(card().textContent).toContain('The agent GitHub CLI is not set.')
 })
 
 it('lists the messages a Source did not send in the last day under it, newest first, with why and where they belong', async () => {

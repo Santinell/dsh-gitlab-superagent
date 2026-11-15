@@ -6,7 +6,7 @@ import { PluginConfig } from '../src/client/deployment.tsx'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at, translator } from './fixtures/panel.tsx'
-import { server, problemOf, fakeForm } from './fixtures/panel-server.ts'
+import { server, problemOf, fakeForm, useGitlabData } from './fixtures/panel-server.ts'
 
 usePanel()
 it('saves this machine\'s settings in the Deployment settings through DSH\'s configuration form, without a restart', async () => {
@@ -82,10 +82,10 @@ it('renders the Deployment page with the derived accounts in the Plugin Manager,
   expect(container.textContent).toBe('')
   server.form = fakeForm().form
   await render('page')
-  for (const fact of ['acme/widgets', '@agent-bot', 'Widgets Bot', '账号在 dsh-superagent 面板的来源设置里修改。']) expect(text()).toContain(fact)
+  for (const fact of ['acme/widgets', '@agent-bot', '账号在 dsh-superagent 面板的来源设置里修改。']) expect(text()).toContain(fact)
   server.setup = { ...server.setup, problem: problemOf('repositoryUnset'), accounts: null }
   await render('page')
-  expect(text()).toContain('部署检查未通过：GitHub 来源没有设置监听的仓库。')
+  expect(text()).toContain('部署检查未通过：The GitHub Source names no repository.')
   expect(field<HTMLInputElement>(zh.deploymentPromptMaxChars).disabled).toBe(false)
   server.down = true
   await render('page')
@@ -105,7 +105,7 @@ it('tells a dsh-superagent that is starting from a browser that cannot write on 
   expect(limit().disabled).toBe(true)
   await act(async () => { publish({ status: 'ready' }) })
   expect(limit().disabled).toBe(false)
-  await act(async () => { publish({ mode: 'memory', status: 'unavailable', writable: false }) })
+  await act(async () => { publish({ status: 'ready', writable: false }) })
   expect(text()).toContain(zh.deploymentReadOnly)
 })
 
@@ -119,11 +119,11 @@ it('reads the state every second after a setup check, until dsh-superagent stopp
   const second = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(1000) }); await settle() }
   server.down = true
   await second()
-  expect(text()).toContain(zh['setup.agentCliUnset'])
+  expect(text()).toContain('The agent GitHub CLI is not set.')
   server.down = false
   server.setup = { ...server.setup, problem: null }
   await second()
-  expect(text()).not.toContain(zh['setup.agentCliUnset'])
+  expect(text()).not.toContain('The agent GitHub CLI is not set.')
   // Once it answers, the state is read every five seconds again.
   const reads = server.requests.filter(request => request.path === 'state').length
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) }); await settle()
@@ -149,4 +149,16 @@ it('ends a restart that never stopped answering after half a minute, and reads t
   expect(reads()).toBe(ended)
   await advance(2_000)
   expect(reads()).toBe(ended + 1)
+})
+
+it('shows the canonical GitLab project, account, host and CLI in Plugin Manager', async () => {
+  useGitlabData()
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  onTestFinished(() => { act(() => root.unmount()); container.remove() })
+  await act(async () => { root.render(<PluginConfig t={translator(zh)} view="page" form={undefined} />) })
+  await settle()
+  for (const value of ['group/subgroup/widgets', '@agent-bot', 'gitlab.example.test', 'glab-agent']) expect(container.textContent).toContain(value)
+  expect(container.textContent).not.toMatch(/github|feishu/iu)
 })
