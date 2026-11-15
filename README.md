@@ -36,11 +36,19 @@ Or install the bundle straight from the GitHub repository. It commits the compil
 dsh plugin --profile superagent add "github:Santinell/dsh-gitlab-superagent#main"
 ```
 
-The repository also ships an installer that creates the profile from the shipped web template, installs the plugin and writes the profile overrides in one step. It uses `dsh` from `PATH`, or `bunx @deepseek-ai/dsh@next` when only bunx is available:
+The repository also ships an installer that creates the profile from the shipped web template, installs the plugin and writes the profile overrides in one step. It runs `bunx @deepseek-ai/dsh@next` by default; `--dsh` or `DSH_CMD` select another command:
 
 ```sh
 scripts/install-dsh                 # profile superagent, port 3082, new stateDir under DSH_HOME
-scripts/install-dsh --help          # profile, port, stateDir, ref, bunx and patch options
+DSH_PORT=3080 scripts/install-dsh   # the same with environment overrides
+scripts/install-dsh --help          # profile, port, stateDir, ref, DSH command and patch options
+```
+
+Without a checkout, put the variable before `sh`, not before `curl`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Santinell/dsh-gitlab-superagent/main/scripts/install-dsh \
+  | DSH_PORT=3080 sh -s
 ```
 
 Local tests and tarball inspection do not establish a live GitLab deployment. The self-managed installation/Issue → MR → CI → human merge smoke and the GitLab.com smoke remain required before release. Real 429 behavior and custom TLS/proxy setups are not claimed as verified.

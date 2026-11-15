@@ -5,14 +5,19 @@
 set -eu
 
 repo='Santinell/dsh-gitlab-superagent'
-profile='superagent'
-port='3082'
-ref='main'
-state_dir=''
-dsh_cmd=''
+profile=${DSH_PROFILE:-superagent}
+port=${DSH_PORT:-3082}
+ref=${DSH_REF:-main}
+state_dir=${DSH_STATE_DIR:-}
+dsh_cmd=${DSH_CMD:-'bunx @deepseek-ai/dsh@next'}
 recreate='0'
 force_patch='0'
 dry_run='0'
+
+truthy() { case "$1" in ''|0|false|no|off) return 1 ;; *) return 0 ;; esac; }
+if truthy "${DSH_RECREATE:-0}"; then recreate='1'; fi
+if truthy "${DSH_FORCE_PATCH:-0}"; then force_patch='1'; fi
+if truthy "${DSH_DRY_RUN:-0}"; then dry_run='1'; fi
 
 usage() {
   cat <<'TXT'
@@ -23,12 +28,16 @@ Options:
   --port PORT       Web UI port written to the profile overrides (default: 3082)
   --state-dir PATH  New absolute stateDir (default: <DSH_HOME>/state/<profile>-gitlab)
   --ref REF         Git ref of the plugin repository (default: main)
-  --dsh CMD         DSH command, for example "bunx @deepseek-ai/dsh@next"
-                    (default: dsh when on PATH, otherwise bunx @deepseek-ai/dsh@next)
+  --dsh CMD         DSH command (default: bunx @deepseek-ai/dsh@next)
   --recreate        Replace an existing profile from the web template (discards its config and patch)
   --force-patch     Overwrite cordis.patch.yml even when it already has custom entries
   --dry-run         Print the planned commands without running them
   -h, --help        Show this help
+
+Environment (a flag wins over its variable):
+  DSH_PROFILE DSH_PORT DSH_STATE_DIR DSH_REF DSH_CMD
+  DSH_RECREATE DSH_FORCE_PATCH DSH_DRY_RUN   (1, true, yes or on enables)
+  DSH_HOME                                   (profile root, default: ~/.dsh)
 
 The script needs DSH and pnpm. It writes <DSH_HOME>/profiles/<profile>/cordis.patch.yml,
 so an existing patch is left untouched unless --force-patch is given.
@@ -59,13 +68,7 @@ case "$port" in
 esac
 
 if [ -z "$dsh_cmd" ]; then
-  if command -v dsh >/dev/null 2>&1; then
-    dsh_cmd='dsh'
-  elif command -v bunx >/dev/null 2>&1; then
-    dsh_cmd='bunx @deepseek-ai/dsh@next'
-  else
-    die "no dsh on PATH; install DSH or pass --dsh \"bunx @deepseek-ai/dsh@next\""
-  fi
+  die "--dsh/DSH_CMD must not be empty"
 fi
 
 command -v pnpm >/dev/null 2>&1 || die "pnpm is not on PATH; 'dsh plugin' forwards to pnpm"

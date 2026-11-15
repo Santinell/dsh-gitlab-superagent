@@ -65,13 +65,16 @@ dsh plugin --profile superagent add "github:Santinell/dsh-gitlab-superagent#main
 
 Run `pnpm build` and commit `lib/` with every source change that affects the package; an installed git revision serves exactly the committed `lib/`.
 
-[`scripts/install-dsh`](../scripts/install-dsh) wraps the steps above in one command: it creates the profile from the web template when it is missing, installs the plugin, and writes `stateDir` and `webserver.port` into the profile patch. It leaves a hand-written patch untouched unless you pass `--force-patch`, and it refuses a profile that exists without the web app bundle unless you pass `--recreate`.
+[`scripts/install-dsh`](../scripts/install-dsh) wraps the steps above in one command: it creates the profile from the web template when it is missing, installs the plugin, and writes `stateDir` and `webserver.port` into the profile patch. It leaves a hand-written patch untouched unless you pass `--force-patch`, and it refuses a profile that exists without the web app bundle unless you pass `--recreate`. It runs `bunx @deepseek-ai/dsh@next` by default.
 
 ```sh
-scripts/install-dsh --profile superagent --port 3082
-scripts/install-dsh --dsh "bunx @deepseek-ai/dsh@next"   # no dsh on PATH
-scripts/install-dsh --ref <tag-or-commit>                # reproducible install
+scripts/install-dsh
+DSH_PORT=3080 DSH_PROFILE=superagent scripts/install-dsh   # environment overrides
+scripts/install-dsh --ref <tag-or-commit>                   # reproducible install
+scripts/install-dsh --dsh "bunx @deepseek-ai/dsh@next"      # explicit DSH command
 ```
+
+Every flag has an environment equivalent, and a flag wins: `DSH_PROFILE`, `DSH_PORT`, `DSH_STATE_DIR`, `DSH_REF`, `DSH_CMD`, `DSH_RECREATE`, `DSH_FORCE_PATCH`, `DSH_DRY_RUN` (set to `1` to enable). `DSH_HOME` selects the profile root. When piping the script into `sh`, set the variables on `sh`, not on `curl`.
 
 Copy/merge [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) into the profile's `cordis.patch.yml`, replacing its placeholder with a NEW absolute stateDir, such as `/home/me/.dsh/state/superagent-gitlab`. Preserve unrelated existing overrides. The `webserver` entry binds 127.0.0.1:3082. The `dsh-superagent` entry config has:
 
