@@ -65,6 +65,14 @@ dsh plugin --profile superagent add "github:Santinell/dsh-gitlab-superagent#main
 
 Run `pnpm build` and commit `lib/` with every source change that affects the package; an installed git revision serves exactly the committed `lib/`.
 
+[`scripts/install-dsh`](../scripts/install-dsh) wraps the steps above in one command: it creates the profile from the web template when it is missing, installs the plugin, and writes `stateDir` and `webserver.port` into the profile patch. It leaves a hand-written patch untouched unless you pass `--force-patch`, and it refuses a profile that exists without the web app bundle unless you pass `--recreate`.
+
+```sh
+scripts/install-dsh --profile superagent --port 3082
+scripts/install-dsh --dsh "bunx @deepseek-ai/dsh@next"   # no dsh on PATH
+scripts/install-dsh --ref <tag-or-commit>                # reproducible install
+```
+
 Copy/merge [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) into the profile's `cordis.patch.yml`, replacing its placeholder with a NEW absolute stateDir, such as `/home/me/.dsh/state/superagent-gitlab`. Preserve unrelated existing overrides. The `webserver` entry binds 127.0.0.1:3082. The `dsh-superagent` entry config has:
 
 | Key | Meaning |
