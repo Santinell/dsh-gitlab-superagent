@@ -57,6 +57,14 @@ dsh plugin --profile superagent add "$PWD/.artifacts/dsh-gitlab-superagent-0.1.0
 
 The DSH profile lives under `${DSH_HOME:-$HOME/.dsh}/profiles/superagent`. Check `dsh plugin --help` if using a different DSH version. For checkout development, `dsh plugin --profile superagent add "link:$PWD"` loads the checkout instead. Do not run profile creation on an existing profile: it replaces its configuration and patch.
 
+The repository commits the compiled `lib/`, so a git install needs neither a build step nor pnpm's build-script allowlist. Pin a tag or commit for reproducibility:
+
+```sh
+dsh plugin --profile superagent add "github:Santinell/dsh-gitlab-superagent#main"
+```
+
+Run `pnpm build` and commit `lib/` with every source change that affects the package; an installed git revision serves exactly the committed `lib/`.
+
 Copy/merge [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) into the profile's `cordis.patch.yml`, replacing its placeholder with a NEW absolute stateDir, such as `/home/me/.dsh/state/superagent-gitlab`. Preserve unrelated existing overrides. The `webserver` entry binds 127.0.0.1:3082. The `dsh-superagent` entry config has:
 
 | Key | Meaning |

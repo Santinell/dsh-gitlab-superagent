@@ -30,4 +30,10 @@ pnpm check
 pnpm pack --pack-destination .artifacts
 ```
 
+Or install the bundle straight from the GitHub repository. It commits the compiled `lib/`, so `pnpm` runs no build scripts during installation:
+
+```sh
+dsh plugin --profile superagent add "github:Santinell/dsh-gitlab-superagent#main"
+```
+
 Local tests and tarball inspection do not establish a live GitLab deployment. The self-managed installation/Issue → MR → CI → human merge smoke and the GitLab.com smoke remain required before release. Real 429 behavior and custom TLS/proxy setups are not claimed as verified.
