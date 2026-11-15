@@ -165,8 +165,23 @@ else
   exit 2
 fi
 
+agent_config=${GLAB_AGENT_CONFIG_DIR:-"${XDG_CONFIG_HOME:-$HOME/.config}/glab-agent"}
+if [ "$dry_run" = '1' ]; then
+  say "+ mkdir -p $agent_config"
+else
+  umask 077
+  mkdir -p "$agent_config"
+  umask "$previous_umask"
+fi
+if [ ! -r "$agent_config/token" ]; then
+  say ''
+  say "Create the agent token file (0600) before saving the GitLab Source:"
+  say "  printf '%s' '<agent PAT>' > \"$agent_config/token\" && chmod 600 \"$agent_config/token\""
+fi
+
 say ''
 say "Done. Start the profile with:"
 say "  $dsh_cmd --profile $profile --no-open"
 say "or omit --no-open to open the panel in a browser. The first start reports projectUnset"
-say "until the GitLab Source (project, host, glab-agent CLI) is saved in the panel."
+say "until the GitLab Source is saved in the panel: fill project and host, and leave cli empty"
+say "to use the packaged scripts/glab-agent wrapper."

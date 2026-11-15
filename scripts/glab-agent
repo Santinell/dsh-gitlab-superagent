@@ -1,0 +1,46 @@
+#!/bin/sh
+# glab-agent: run glab as the deployment's GitLab account without touching operator credentials.
+#
+# The plugin passes GITLAB_HOST from the Source configuration; GLAB_AGENT_HOST overrides it.
+# The token is read from $GLAB_AGENT_CONFIG_DIR/token (default: ${XDG_CONFIG_HOME:-$HOME/.config}/glab-agent/token).
+# GLAB_AGENT_EXECUTABLE optionally names the real glab; otherwise a system glab is located outside the worker shim directory.
+set -eu
+umask 077
+
+die() { printf 'glab-agent: %s\n' "$*" >&2; exit 1; }
+
+config_dir="${GLAB_AGENT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/glab-agent}"
+token_file="${GLAB_AGENT_TOKEN_FILE:-$config_dir/token}"
+host="${GLAB_AGENT_HOST:-${GITLAB_HOST:-}}"
+
+[ -n "$host" ] || die 'no GitLab host; set GITLAB_HOST or GLAB_AGENT_HOST'
+[ -r "$token_file" ] || die "no readable token at $token_file"
+
+real_glab="${GLAB_AGENT_EXECUTABLE:-}"
+if [ -z "$real_glab" ]; then
+  for candidate in /usr/bin/glab /usr/local/bin/glab "$HOME/.local/bin/glab"; do
+    if [ -x "$candidate" ] && ! [ "$candidate" -ef "$0" ]; then real_glab=$candidate; break; fi
+  done
+fi
+if [ -z "$real_glab" ]; then
+  saved_ifs=$IFS
+  IFS=:
+  for directory in $PATH; do
+    case "$directory" in *worker-bin*) continue ;; esac
+    candidate="$directory/glab"
+    if [ -x "$candidate" ] && ! [ "$candidate" -ef "$0" ]; then real_glab=$candidate; break; fi
+  done
+  IFS=$saved_ifs
+fi
+[ -n "$real_glab" ] || die 'real glab not found; set GLAB_AGENT_EXECUTABLE to its absolute path'
+case "$real_glab" in /*) ;; *) die 'real glab must have an absolute path' ;; esac
+[ -x "$real_glab" ] || die "real glab is not executable: $real_glab"
+[ "$real_glab" -ef "$0" ] && die 'refusing to run this wrapper as the real glab'
+
+unset GLAB_TOKEN CI_JOB_TOKEN GITLAB_ACCESS_TOKEN GITLAB_API_HOST
+export GLAB_CONFIG_DIR="$config_dir"
+export GITLAB_HOST="$host"
+GITLAB_TOKEN="$(cat "$token_file")"
+[ -n "$GITLAB_TOKEN" ] || die 'empty token file'
+export GITLAB_TOKEN
+exec "$real_glab" "$@"

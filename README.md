@@ -51,4 +51,6 @@ curl -fsSL https://raw.githubusercontent.com/Santinell/dsh-gitlab-superagent/mai
   | DSH_PORT=3080 sh -s
 ```
 
+After installation, write the agent's PAT to `${XDG_CONFIG_HOME:-$HOME/.config}/glab-agent/token` (`0600`, directory `0700`). The Source `cli` field can stay empty: the plugin then runs the packaged `scripts/glab-agent` and passes the Source host to it.
+
 Local tests and tarball inspection do not establish a live GitLab deployment. The self-managed installation/Issue → MR → CI → human merge smoke and the GitLab.com smoke remain required before release. Real 429 behavior and custom TLS/proxy setups are not claimed as verified.

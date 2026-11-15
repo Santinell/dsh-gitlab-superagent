@@ -8,6 +8,7 @@ import { z } from 'zod'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra/environment.ts'
 import { SetupError } from './setup.ts'
+import { packagedGlabAgent } from './package.ts'
 import { resolveAccess } from './sources/gitlab-access.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -79,9 +80,10 @@ export function executable(name: string, path: string, exclude?: string): string
 
 export type Probe = (argv: string[]) => Promise<string>
 /** Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary. */
-export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
+export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal, host?: string): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
-  return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
+  const hostEnv = host ? [`GITLAB_HOST=${host}`] : []
+  return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...hostEnv, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
 }
 
 const GithubUser = z.object({ login: z.string().regex(/^[A-Za-z0-9-]+$/), id: z.number().int().positive() })
@@ -128,9 +130,8 @@ export async function resolveGitlabDeployment(machine: Machine, gitlab: unknown,
   const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
   const projectPath = accounts.project
   if (!projectPath) throw new SetupError('projectUnset')
-  if (!accounts.cli) throw new SetupError('gitlabCliUnset')
   let cli: string
-  try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
+  try { cli = executable(accounts.cli || packagedGlabAgent(), path, workerBin(stateDir)) } catch (error) { throw new SetupError('gitlabCliMissing', { output: reason(error) }) }
   const agent = parsed(GitlabUser, await probe([cli, 'api', 'user']).catch((error: unknown) => { throw new SetupError('gitlabCliSignedOut', { output: reason(error) }) }))
   if (!agent) throw new SetupError('gitlabCliNoAccount')
   const host = accounts.host.toLowerCase()

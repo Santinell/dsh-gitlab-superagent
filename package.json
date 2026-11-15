@@ -28,7 +28,8 @@
     "SETUP.md",
     "docs",
     "examples",
-    "scripts/dsh-superagent"
+    "scripts/dsh-superagent",
+    "scripts/glab-agent"
   ],
   "dsh": {
     "bundle": {

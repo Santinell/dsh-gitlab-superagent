@@ -1,4 +1,6 @@
 #!/bin/sh
+# Example of a fixed custom wrapper. The package already ships scripts/glab-agent, which the plugin
+# uses when the Source `cli` field is empty; copy this file only to pin your own host and location.
 # Copy to ~/.local/bin/glab-agent and set these deployment-specific defaults.
 # The executable MUST be the absolute path of real glab, never the worker shim.
 set -eu

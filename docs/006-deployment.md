@@ -14,23 +14,29 @@ Workers run under the service's OS account, with unrestricted tools in their man
 
 ## Agent wrapper and token file
 
-Copy [examples/glab-agent.sh](../examples/glab-agent.sh) to an absolute wrapper path, for example `/home/me/.local/bin/glab-agent`. Edit `agent_host` and select the absolute path of the real glab executable (`command -v glab` before entering a worker shell). Never point it at a worker shim. Prepare the directory without printing secrets:
+The package ships `scripts/glab-agent`. When the Source's `cli` field is empty, the plugin runs that wrapper and passes `GITLAB_HOST` from the Source, so neither the host nor the wrapper path belongs in the panel. The wrapper reads the agent's PAT from `${XDG_CONFIG_HOME:-$HOME/.config}/glab-agent/token` and runs the real glab found outside the worker shim directory.
+
+Create the token file in your own terminal; never put the PAT into command arguments, chat, the profile YAML, git or logs:
 
 ```sh
-install -d -m 700 "$HOME/.config/glab-agent"
-install -d "$HOME/.local/bin"
-install -m 700 examples/glab-agent.sh "$HOME/.local/bin/glab-agent"
+agent_config="${XDG_CONFIG_HOME:-$HOME/.config}/glab-agent"
+install -d -m 700 "$agent_config"
+printf '%s' '<agent-pat>' > "$agent_config/token"
+chmod 600 "$agent_config/token"
 ```
 
-The operator creates `$HOME/.config/glab-agent/token` in their own terminal/editor and sets `chmod 600` on it; keep the directory 0700. Enter the PAT there, never in command arguments, chat, the profile YAML, git or logs. `GLAB_AGENT_CONFIG_DIR` can relocate this directory; `GLAB_AGENT_EXECUTABLE` can select the real absolute binary. The wrapper exports `GITLAB_TOKEN` only to its own glab process and overrides inherited operator credentials/host. For a deliberately separate API endpoint, set `GITLAB_API_HOST` in the wrapper as indicated by its comment.
+`GLAB_AGENT_CONFIG_DIR` relocates the directory, `GLAB_AGENT_TOKEN_FILE` selects another token file, `GLAB_AGENT_EXECUTABLE` names the real absolute glab, and `GLAB_AGENT_HOST` overrides the Source host. For a fixed custom wrapper, copy [examples/glab-agent.sh](../examples/glab-agent.sh), edit it, and set its absolute path as the Source `cli`; the shipped wrapper stays the default.
+
+The wrapper exports `GITLAB_TOKEN` only to its own glab process and overrides inherited operator credentials/host. For a deliberately separate API endpoint, set `GITLAB_API_HOST` in a custom wrapper.
 
 Do **not** run `glab auth login` for this wrapper. A separate `GLAB_CONFIG_DIR` does not isolate the OS keyring; changing login can disturb the operator. `glab auth status` can report signed out for environment-token authentication and is not a setup probe.
 
+Verify the packaged wrapper; setup performs the same checks and a profile-launched shell sets `DSH_PROFILE_DIR`:
+
 ```sh
-/home/me/.local/bin/glab-agent --version
-/home/me/.local/bin/glab-agent api user --jq '{username, id, commit_email}'
-/home/me/.local/bin/glab-agent api version --jq .version
-/home/me/.local/bin/glab-agent api projects/group%2Fsubgroup%2Fproject --jq '{id, path_with_namespace, default_branch, permissions}'
+export GITLAB_HOST=gitlab.example.com
+"$DSH_PROFILE_DIR/node_modules/dsh-gitlab-superagent/scripts/glab-agent" api user --jq '{username, id, commit_email}'
+"$DSH_PROFILE_DIR/node_modules/dsh-gitlab-superagent/scripts/glab-agent" api version --jq .version
 ```
 
 Require the expected agent username, server 19.2.9+, canonical project and effective Maintainer access. Project access can be inherited from a group; setup's `resolveAccess` handles both. Operator and agent accounts must differ.
@@ -45,7 +51,7 @@ pnpm check
 pnpm pack --pack-destination .artifacts
 ```
 
-For the current version the output is `.artifacts/dsh-gitlab-superagent-0.1.0.tgz`. The tarball includes compiled entries, prompts, the GitLab skill, locales, patch, this guide, SETUP, examples and the service script. It excludes tests and fixtures. No npm publication is assumed.
+For the current version the output is `.artifacts/dsh-gitlab-superagent-0.1.0.tgz`. The tarball includes compiled entries, prompts, the GitLab skill, locales, patch, this guide, SETUP, examples, the service script and the `glab-agent` wrapper. It excludes tests and fixtures. No npm publication is assumed.
 
 For a new installation only:
 

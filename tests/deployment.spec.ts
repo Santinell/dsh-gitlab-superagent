@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Config, executable, GitlabAccountsSchema, machineOf, resolveDeployment, resolveGitlabDeployment, SETUP_FIELDS, type Machine, type Probe } from '../src/deployment.ts'
+import { Config, executable, GitlabAccountsSchema, machineOf, resolveDeployment, resolveGitlabDeployment, SETUP_FIELDS, workerProbe, type Machine, type Probe } from '../src/deployment.ts'
+import { packagedGlabAgent } from '../src/package.ts'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { gitEnv } from './fixtures/git.ts'
@@ -99,6 +100,30 @@ describe('setup', () => {
     expect(SETUP_FIELDS.gitlab).toEqual(['project', 'cli', 'host'])
   })
 
+  it('uses the packaged glab-agent when the Source names no CLI', async () => {
+    const seen: string[] = []
+    const answer: Probe = async argv => {
+      seen.push(argv[0]!)
+      if (argv[1] === 'api' && argv[2] === 'user') return JSON.stringify(user)
+      return JSON.stringify({ id: 25, path_with_namespace: 'acme/widgets', web_url: 'https://gitlab.example.com/acme/widgets', default_branch: 'main',
+        permissions: { project_access: { access_level: 30 }, group_access: null } })
+    }
+    const deployment = await resolveGitlabDeployment(machine(), { project: 'acme/widgets', host: 'gitlab.example.com' }, answer, path)
+    expect(deployment.codeHost?.cli).toBe(packagedGlabAgent())
+    expect(seen).toEqual([packagedGlabAgent(), packagedGlabAgent()])
+  })
+
+  it('passes the GitLab host to worker probes', async () => {
+    const calls: string[][] = []
+    const subprocess = { spawn: (options: { argv: string[] }) => {
+      calls.push(options.argv)
+      return { done: Promise.resolve({ exitCode: 0 }), collected: {
+        stdout: { readFrom: () => ({ text: '' }) }, stderr: { readFrom: () => ({ text: '' }) } } }
+    } } as never
+    await workerProbe(subprocess, join(dir, 'state'), dir, new AbortController().signal, 'gitlab.example.com')(['glab', 'api', 'user'])
+    expect(calls[0]).toEqual(['env', expect.stringMatching(/^PATH=/), 'GITLAB_HOST=gitlab.example.com', 'glab', 'api', 'user'])
+  })
+
   it('falls back to the GitLab private commit email format when the user API omits it', async () => {
     const cli = glab('glab-no-email', { user: { ...user, commit_email: null } })
     const deployment = await resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli, host: 'gitlab.example.com' }, probe, path)
@@ -116,7 +141,6 @@ describe('setup', () => {
 
   it('names each missing or mismatched GitLab input', async () => {
     await expect(resolveGitlabDeployment(machine(), { cli: 'glab' }, probe, path)).rejects.toEqual(setupError('gitlab', 'projectUnset'))
-    await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets' }, probe, path)).rejects.toEqual(setupError('gitlab', 'gitlabCliUnset'))
     await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: join(dir, 'missing'), host: 'gitlab.example.com' }, probe, path))
       .rejects.toEqual(setupError('gitlab', 'gitlabCliMissing', { output: expect.stringContaining('not an executable file') }))
     program(join(dir, 'bin', 'glab-broken'), 'exit 1')

@@ -6,6 +6,13 @@ import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, 
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 
+/** GitLab host from the raw Source configuration, when it is already a configured string. */
+const configuredHost = (config: unknown): string | undefined => {
+  if (typeof config !== 'object' || config === null) return undefined
+  const host = (config as { host?: unknown }).host
+  return typeof host === 'string' && host ? host : undefined
+}
+
 export interface SetupHost {
   readonly context: Context
   readonly machine: Machine
@@ -73,13 +80,13 @@ export class Setup {
   }
   restore(): void { this.restoreEnvironment?.(); this.restoreEnvironment = undefined }
   /** Probes CLIs the way worker shells run them, using `stateDir` as `cwd` since it exists even before the repository clone is valid. */
-  private probe() {
+  private probe(host?: string) {
     const { context, machine, lifetime } = this.host
-    return workerProbe(context.subprocess, machine.stateDir, machine.stateDir, lifetime)
+    return workerProbe(context.subprocess, machine.stateDir, machine.stateDir, lifetime, host)
   }
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
-    const probe = this.probe()
+    const probe = this.probe(configuredHost(settings.sources.gitlab?.config))
     if (settings.sources.github) throw new SetupError('stateDirUnsupported')
     const deployment = await resolveGitlabDeployment(machine, settings.sources.gitlab?.config, probe)
     const machineProblem = (error: unknown): never => {
