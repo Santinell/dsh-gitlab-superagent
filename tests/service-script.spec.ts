@@ -51,16 +51,20 @@ function run(...args: string[]): Promise<{ code: number; stdout: string; stderr:
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
     { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
       timeout: 20_000 },
-    (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
+    (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr })))
 }
-const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
+const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
 async function answering(state: unknown = READY, always = false): Promise<string> {
   server = createServer((_request, response) => {
     if (!always && !existsSync(join(root, 'launched'))) { response.writeHead(503).end(); return }
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(state))
   })
-  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve, reject) => {
+    const listener = server!
+    listener.once('error', reject)
+    listener.listen(0, '127.0.0.1', () => { listener.removeListener('error', reject); resolve() })
+  })
   return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`
 }
 const status = async (profile: string, url = 'http://127.0.0.1:9') =>
@@ -132,11 +136,11 @@ it('keeps only the newest logs it wrote for the profile', async () => {
   expect(logs.filter(name => name.startsWith('dsh-superagent-other-'))).toHaveLength(25)
   expect(logs).toContain('dsh-superagent-20260901-000000-1.log')
 }, 20_000)
-it('reports a service whose Feishu bot setup could not check as running, and reads an answer with keys missing', async () => {
+it('reads an answer with keys missing, and reports a service whose source is paused as running', async () => {
   processes(service(sleeper()))
-  const feishu = { health: { runtime: { state: 'ready', detail: '' }, feishu: { state: 'paused', detail: '' } },
-    setup: { problem: null, feishuProblem: { code: 'feishuNoBot', detail: 'No bot' } } }
-  expect(await run('status', '--url', await answering(feishu, true))).toMatchObject({ code: 0 })
+  const paused = { health: { runtime: { state: 'ready', detail: '' }, gitlab: { state: 'paused', detail: '' } },
+    setup: { problem: null } }
+  expect(await run('status', '--url', await answering(paused, true))).toMatchObject({ code: 0 })
   server!.close()
   expect(await run('status', '--url', await answering({ health: { runtime: { state: 'ready' } } }, true))).toMatchObject({ code: 0 })
   server!.close()
@@ -144,22 +148,23 @@ it('reports a service whose Feishu bot setup could not check as running, and rea
 })
 it('exits 2 while a part such as a Source reports an error, which a restart does not fix, and prints what it reports', async () => {
   processes(service(sleeper()))
-  const github = { health: { runtime: { state: 'ready', detail: '' }, github: { state: 'error', detail: 'bad token' } }, setup: {} }
-  const url = await answering(github, true)
+  const gitlab = { health: { runtime: { state: 'ready', detail: '' }, gitlab: { state: 'error', detail: 'bad token' } }, setup: {} }
+  const url = await answering(gitlab, true)
   const checked = await run('status', '--url', url)
   expect(checked.code).toBe(2)
-  expect(JSON.parse(checked.stdout)).toMatchObject({ errors: { github: 'bad token' } })
+  expect(JSON.parse(checked.stdout)).toMatchObject({ errors: { gitlab: 'bad token' } })
   expect(await run('start', '--url', url, '--timeout', '10'))
-    .toMatchObject({ code: 2, stdout: expect.stringContaining('github reports an error, which a restart does not fix: bad token') })
+    .toMatchObject({ code: 2, stdout: expect.stringContaining('gitlab reports an error, which a restart does not fix: bad token') })
 }, 20_000)
 it('exits 3 while the service waits for setup, from status and from start, which a restart does not fix', async () => {
   processes(service(sleeper()))
   const waiting = { health: { runtime: { state: 'paused', detail: '' } },
-    setup: { problem: { code: 'repositoryUnset', detail: 'The GitHub Source names no repository.' }, feishuProblem: null } }
+    setup: { problem: { code: 'projectUnset', place: 'gitlab', detail: 'The GitLab Source names no project.' } } }
   const url = await answering(waiting, true)
   expect(await run('status', '--url', url)).toMatchObject({ code: 3 })
   expect(await run('start', '--url', url, '--timeout', '10'))
-    .toMatchObject({ code: 3, stdout: expect.stringContaining('waiting for setup: The GitHub Source names no repository.') })
+    .toMatchObject({ code: 3, stdout: expect.stringContaining('waiting for setup: The GitLab Source names no project.') })
+  expect((await run('start', '--url', url, '--timeout', '10')).stdout).toContain('Fix it on the GitLab card')
 }, 20_000)
 it('restarts the service, and a restart whose graceful stop timed out does not keep recovery off', async () => {
   const url = await answering()
@@ -232,3 +237,12 @@ it('does not signal a process that took the recorded service PID, and keeps a st
   expect(await run('stop', '--stop-timeout', '1')).toMatchObject({ code: 1, stderr: expect.stringContaining('Graceful stop timed out') })
   expect(existsSync(join(control('superagent'), 'manually-stopped'))).toBe(true)
 }, 20_000)
+
+it('points deployment problems to Deployment settings without weakening setup status', async () => {
+  processes(service(sleeper()))
+  const url = await answering({ health: { runtime: { state: 'paused' } }, setup: { problem: {
+    place: 'deployment', code: 'foreignFile', detail: 'Choose a new state directory.' } } }, true)
+  const result = await run('start', '--url', url, '--timeout', '10')
+  expect(result).toMatchObject({ code: 3, stdout: expect.stringContaining('Fix it in Deployment settings.') })
+  expect(result.stdout).not.toContain('Fix it on the GitLab card')
+})

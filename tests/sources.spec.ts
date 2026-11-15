@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Engine, MemoryRepositories, key, type Assessor, type Executor, type Thread, type Ticket, type Trigger } from '../src/core/index.ts'
 import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, feishuTime, feishuTrigger, historyEvent }
-  from '../src/sources/feishu.ts'
+  from './fixtures/feishu/feishu.ts'
 import { KV } from '../src/kv.ts'
-import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
-import { runFeishu } from '../src/sources/feishu-loops.ts'
+import { apply as applyFeishu, pollThreads as pollFeishuThreads } from './fixtures/feishu/feishu.ts'
+import { runFeishu } from './fixtures/feishu/feishu-loops.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
@@ -106,8 +106,9 @@ describe('feishu source', () => {
     const unset = await run({ deployment: testDeployment({ feishu: undefined }) })
     expect(unset.registered).toBe(feishuKind)
     expect(unset.health).toMatchObject({ feishu: { state: 'paused', code: 'feishuCliUnset' }, history: { state: 'paused', code: 'feishuBotMissing' } })
-    const problem = new SetupError('feishuBotNotReady', { app: 'cli_bot', status: 'missing' }).problem
-    const refused = await run({ deployment: testDeployment({ feishu: undefined }), feishuProblem: problem })
+    const problem = { place: 'feishu', code: 'feishuBotNotReady', values: { app: 'cli_bot', status: 'missing' },
+      detail: 'The bot identity of app cli_bot is missing' } as unknown as SetupProblem
+    const refused = await run({ deployment: testDeployment({ feishu: undefined }), setupProblem: problem })
     // A failed bot check waits for the operator's fix and a check; it does not retry by itself like a polling error.
     expect(refused.health.feishu).toEqual({ state: 'paused', detail: problem.detail })
     expect((await run({ configured: () => false })).health.feishu).toEqual({ state: 'paused', detail: 'Waiting for the deployment check', code: 'setupPending' })
@@ -972,13 +973,16 @@ describe('github source', () => {
 
 describe('source context', () => {
   it('gives each kind the setup problem whose place it is', () => {
-    const feishu: SetupProblem = { place: 'feishu', code: 'feishuNoBot', values: {}, detail: 'No bot' }
+    const feishu = { place: 'feishu', code: 'feishuNoBot', values: {}, detail: 'No bot' } as unknown as SetupProblem
     const github: SetupProblem = { place: 'github', code: 'agentCliUnset', values: {}, detail: 'No CLI' }
-    const h = host({ feishuProblem: feishu, setupProblem: github })
+    const h = host({ setupProblem: feishu })
     expect(h.context(feishuKind).problem).toBe(feishu)
-    expect(h.context(githubKind).problem).toBe(github)
     expect(h.context({ kind: 'probe', health: [] }).problem).toBeUndefined()
     h.store.close()
+    const other = host({ setupProblem: github })
+    expect(other.context(githubKind).problem).toBe(github)
+    expect(other.context(feishuKind).problem).toBeUndefined()
+    other.store.close()
   })
   it('lets a kind report only its own health entries', () => {
     const h = host()
@@ -1043,7 +1047,7 @@ describe('feishu event consumer', () => {
    * A bot CLI whose `event consume` behaves as `mode` says: `never` gets ready, `warn` warns once ready, `ready` stays up,
    * and `flaky` exits after its first ready. It records each run and the PID of the latest.
    */
-  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'late'): string {
+  function cli(mode: 'never' | 'warn' | 'ready' | 'flaky' | 'events' | 'events-before-ready' | 'late'): string {
     const path = join(dir, 'lark-bot')
     writeFileSync(path, `#!/bin/sh
   [ "$1" = event ] || { echo '{"ok":true,"data":{}}'; exit 0; }
@@ -1054,6 +1058,7 @@ describe('feishu event consumer', () => {
     ready) echo '[event] ready' >&2; exec sleep 60 ;;
     flaky) echo '[event] ready' >&2; [ "$n" -gt 1 ] && exec sleep 60; exit 1 ;;
     events) echo '[event] ready' >&2; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
+    events-before-ready) cat '${dir}/events'; while [ ! -f '${dir}/release-ready' ]; do sleep 0.01; done; echo '[event] ready' >&2; touch '${dir}/printed'; exec sleep 60 ;;
     late) echo '[event] ready' >&2; sleep 1; cat '${dir}/events'; touch '${dir}/printed'; exec sleep 60 ;;
   esac
   `, { mode: 0o755 })
@@ -1086,12 +1091,17 @@ describe('feishu event consumer', () => {
   const event = (id: string, chat: string, type: 'group' | 'p2p') => JSON.stringify({ message_id: id, chat_id: chat, chat_type: type,
     sender_id: 'ou_alice', sender_type: 'user', content: 'fix it', create_time: String(Date.now()),
     ...type === 'group' ? { mentions: [{ id: 'ou_bot', name: 'Bot' }] } : {} })
-  it('takes in the event lines it reads, records each chat as direct or not, and reports a malformed line without stopping', async () => {
+  it.each(['events', 'events-before-ready'] as const)('takes in events and preserves malformed-line errors without stopping (%s)', async mode => {
     writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'not json',
       event('om_3', 'oc_group', 'group')].join('\n') + '\n')
-    const { ctx, health, store } = consumerSource(cli('events'))
+    const { ctx, health, store } = consumerSource(cli(mode))
     running = runFeishu(ctx, controller.signal)
     await vi.waitFor(() => expect(store.triggers.get(feishuTriggerId('om_3'))).toBeDefined(), until)
+    if (mode === 'events-before-ready') {
+      await vi.waitFor(() => expect(health.feishu?.state).toBe('error'), until)
+      writeFileSync(join(dir, 'release-ready'), '')
+      await vi.waitFor(() => expect(existsSync(join(dir, 'printed'))).toBe(true), until)
+    }
     expect(['om_1', 'om_2'].map(id => store.triggers.get(feishuTriggerId(id))?.meta.direct)).toEqual([false, true])
     expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_dm: true })
     expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })

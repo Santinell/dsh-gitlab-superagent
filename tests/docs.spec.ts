@@ -66,3 +66,13 @@ describe('documentation', () => {
     expect(tests.filter(path => !existsSync(join(ROOT, path)))).toEqual([])
   })
 })
+
+it('keeps executable deployment examples on the supported GitLab configuration', () => {
+  const guides = ['README.md', 'SETUP.md', ...numbered.map(name => `docs/${name}`)]
+  const violations = guides.flatMap(path => [...read(path).matchAll(/```(?:sh|bash|yaml|json)?\n([\s\S]*?)```/g)]
+    .filter(match => /lark-cli|\bgh (?:auth|api|repo|pr)|DSH_SUPERAGENT_(?:GITHUB|FEISHU)|source:(?:github|feishu)|skill\/(?:github|feishu)/.test(match[1]!))
+    .map(() => path))
+  expect(violations).toEqual([])
+  expect(read('SETUP.md')).toContain('api user')
+  expect(read('docs/006-deployment.md')).toContain('19.2.9')
+})

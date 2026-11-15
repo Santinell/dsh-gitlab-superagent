@@ -7,7 +7,7 @@ import { ROUTER_PRESET, WORKER_PRESET } from '../src/app/sessions.ts'
 
 interface Row { id?: string; name: string; disabled?: unknown; config?: Record<string, unknown> & { plugins?: Row[] } | Row[] }
 /** The patch as DSH reads it: Cordis's include plugin parses `!!js` scalars, and applies the inserts to an entry list. */
-async function patched(): Promise<Row[]> {
+async function patched(profile = false): Promise<Row[]> {
   const cordis = createRequire(createRequire(import.meta.url).resolve('@deepseek-ai/cordis/package.json'))
   const include = cordis.resolve('@deepseek-ai/cordis-plugin-include')
   const { entryListSchema, applyEntryPatches } = await import(include) as {
@@ -17,6 +17,13 @@ async function patched(): Promise<Row[]> {
   const warnings: string[] = []
   const rows = applyEntryPatches([], patches, message => { warnings.push(message) })
   expect(warnings).toEqual([])
+  if (profile) {
+    const overrides = yaml.load(readFileSync(join(import.meta.dirname, '..', 'examples/profile.cordis.patch.yml'), 'utf8')
+      .replace('<absolute-new-state-directory>', '/tmp/new-gitlab-state'), { schema: entryListSchema }) as unknown[]
+    const applied = applyEntryPatches([{ id: 'webserver', name: '@deepseek-ai/dsh-host-webserver' }, ...rows], overrides, message => { warnings.push(message) })
+    expect(warnings).toEqual([])
+    return applied
+  }
   return rows
 }
 /** Every plugin row of a preset, those inside groups too. */
@@ -28,8 +35,7 @@ const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.confi
 
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
-  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-worker-preset',
-    'dsh-superagent-router-preset'])
+  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-gitlab', 'dsh-superagent-worker-preset', 'dsh-superagent-router-preset'])
   const preset = presetOf(rows, WORKER_PRESET)
   expect(preset.id).toBe(WORKER_PRESET)
   const plugins = flat(preset.plugins)
@@ -70,4 +76,34 @@ it('defines the router preset the main Session runs under: the worker\'s 5-secon
     '@deepseek-ai/dsh-tool-todo', '@deepseek-ai/dsh-tool-ask-user', '@deepseek-ai/dsh-tool-present', '@deepseek-ai/dsh-plan-mode',
     '@deepseek-ai/dsh-plugin-manager/tools', '@deepseek-ai/dsh-plugin-market/tools', '@deepseek-ai/dsh-tool-schedule', '@deepseek-ai/dsh-tool-goal',
     '@deepseek-ai/dsh-command-goal', '@deepseek-ai/dsh-tool-workflow', '@deepseek-ai/dsh-workflow-ptc']) expect(names, name).not.toContain(name)
+})
+
+it('uses the fork package name for loading while retaining Cordis entry and preset identities', async () => {
+  const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'))
+  expect(manifest.name).toBe('dsh-gitlab-superagent')
+  expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')
+  expect(manifest.exports['./gitlab-watch']).toBe('./lib/gitlab-watch.js')
+  expect(manifest.exports).not.toHaveProperty('./github-watch')
+  expect(manifest.exports).not.toHaveProperty('./feishu-watch')
+  expect(manifest.files).toEqual(expect.arrayContaining(['lib', 'prompts', 'skills', 'locale/*.json', 'SETUP.md', 'examples', 'scripts/dsh-superagent']))
+  const rows = await patched()
+  expect(rows[0]).toMatchObject({ id: 'dsh-superagent', name: 'dsh-gitlab-superagent' })
+  expect(rows[1]).toMatchObject({ id: 'dsh-superagent-gitlab', name: 'dsh-gitlab-superagent/gitlab-watch' })
+  const configured = await patched(true)
+  expect(configured.find(row => row.id === 'dsh-superagent')).toMatchObject({ name: 'dsh-gitlab-superagent', config: { stateDir: '/tmp/new-gitlab-state' } })
+  expect(configured.find(row => row.id === 'webserver')).toMatchObject({ config: { host: '127.0.0.1', port: 3082 } })
+})
+
+it('registers the browser factory under the resolved npm package name, independently of Cordis IDs', async () => {
+  const { runInNewContext } = await import('node:vm')
+  const config = (await import('../tsdown.config.ts')).default as { entry: Record<string, string>; outputOptions?: { banner?: string; intro?: string; footer?: string } }[]
+  const client = config.find(entry => entry.entry.client)!.outputOptions!
+  const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8'))
+  const modules = new Map<string, { factory: (require: unknown) => unknown }>()
+  runInNewContext(`${client.banner}\n${client.intro}\n${client.footer}`, {
+    window: { __ModuleLoader__: { load: (value: { id: string; factory: (require: unknown) => unknown }) => modules.set(value.id, value) } },
+  })
+  expect(typeof modules.get(manifest.name)?.factory).toBe('function')
+  expect(modules.has('dsh-superagent')).toBe(false)
+  expect((await patched())[0]!.id).toBe('dsh-superagent')
 })

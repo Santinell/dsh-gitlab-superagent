@@ -1,12 +1,13 @@
-# Example profile configuration ($DSH_HOME/profiles/<profile>/cordis.patch.yml).
-# Replace <placeholders> before first start; see docs/006-deployment.md.
+# Profile overrides, applied after the dsh-gitlab-superagent bundle patch.
+# Keep this entry ID and the profile name stable when updating the npm package.
 - id: webserver
   config:
     host: 127.0.0.1
     port: 3082
 - id: dsh-superagent
   config:
-    stateDir: <absolute path, for example /home/me/.dsh/state/superagent>
-# Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
-# - id: dsh-superagent-feishu
-#   disabled: false
+    # A NEW absolute stateDir for this GitLab installation; replace the placeholder.
+    stateDir: <absolute-new-state-directory>
+# Source project/host/cli and policy.allowed are saved in the panel/API, not here.
+# Example: source:gitlab -> project: group/subgroup/project,
+# host: gitlab.example.com, cli: /home/me/.local/bin/glab-agent.

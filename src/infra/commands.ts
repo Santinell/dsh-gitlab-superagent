@@ -1,4 +1,4 @@
-/** Subprocess wrapper for running gh, lark-cli, and git commands under the deployment's configured accounts. */
+/** Subprocess wrapper for running gh, glab, and git commands under the deployment's configured accounts. */
 import { execFile } from 'node:child_process'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
@@ -46,14 +46,8 @@ export function validItems<T>(item: z.ZodType<T>, list: readonly unknown[], tall
   if (tally) tally.skipped += list.length - items.length
   return items
 }
-/** Rewrites Feishu error 232011 (bot not in chat) with remediation instructions. */
-function membership(error: unknown): unknown {
-  if (!(error instanceof CliError) || error.code !== 232011) return error
-  const hint = 'The Feishu bot is not a member of the chat. Add the bot in the chat settings, then retry.'
-  return new CliError(hint, error.code, error.exitCode)
-}
 /**
- * Executes gh, lark-cli, and git subprocesses with deployment account credentials, timeouts, and abort signals.
+ * Executes gh, glab, and git subprocesses with deployment account credentials, timeouts, and abort signals.
  * Restricts GitHub API calls to the configured repository and translates CLI failures into CliError instances for Sources, MasterAssessor, Outbox, and Settings.
  */
 export class Commands {
@@ -68,12 +62,18 @@ export class Commands {
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
       const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
-        env: { ...process.env, ...this.environment, GH_PROMPT_DISABLED: '1', LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
+        env: { ...process.env, ...this.environment, GH_PROMPT_DISABLED: '1' } })
       return stdout
     } catch (error) { throw commandError(error, program) }
   }
   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
   async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.github.cli, args)) as T }
+  /** Runs the agent's GitLab CLI (the glab-agent wrapper) and parses its JSON output. */
+  async glab<T>(args: string[]): Promise<T> {
+    const host = this.deployment.codeHost
+    if (!host) throw new Error('This deployment has no GitLab account')
+    return JSON.parse(await this.run(host.cli, args)) as T
+  }
   /**
    * Calls the GitHub API on a path within the configured repository, validating JSON output when a schema is provided
    * or returning raw CLI output (such as raw files or `--include` headers) when omitted.
@@ -96,19 +96,60 @@ export class Commands {
     if (outside) throw new Error('GitHub calls are restricted to the configured repository')
     return path ? `repos/${this.repository}/${path}` : `repos/${this.repository}`
   }
+  /** Numeric GitLab project id, or undefined for a legacy GitHub deployment. */
+  get projectId(): number | undefined { return this.deployment.project?.id }
+  /** `path_with_namespace` of the configured GitLab project. */
+  get projectPath(): string | undefined { return this.deployment.project?.path }
   /**
-   * Runs the Feishu bot's `lark-cli` and returns the JSON `data` payload.
-   * @throws CliError with Feishu's error code on failure (rewriting 232011 when the bot is not in the chat).
+   * Calls the GitLab API on a path within the configured project, validating JSON output when a schema is provided.
+   * @throws CliError with GitLab's HTTP status as `code` on failure.
    */
-  async lark<T>(args: string[], cwd?: string): Promise<T> {
-    const bot = this.deployment.feishu
-    if (!bot) throw new Error('The Feishu Source has no working bot CLI')
-    const output = await this.run(bot.cli, [...args, '--as', 'bot', '--format', 'json'], cwd)
-      .catch((error: unknown) => { throw membership(error) })
-    const result = JSON.parse(output) as { ok: boolean; data: T; error?: { code?: number; message?: string } }
-    const code = result.error?.code
-    if (!result.ok) throw membership(new CliError(`${result.error?.message ?? 'Feishu command failed'}${code ? ` (${code})` : ''}`, code))
-    return result.data
+  async gitlabApi<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
+  async gitlabApi(path: string, ...flags: string[]): Promise<string>
+  async gitlabApi<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
+    if (typeof schema === 'string') return this.run(this.deployment.codeHost!.cli, ['api', this.gitlabPath(schema), ...rest])
+    const [path = '', ...flags] = rest
+    return schema.parse(await this.glab(['api', this.gitlabPath(path), ...flags]))
+  }
+  /** Fetches every page of a GitLab API list as newline-delimited JSON; malformed lines are skipped and counted. */
+  async gitlabPages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
+    const text = await this.run(this.deployment.codeHost!.cli, ['api', this.gitlabPath(path), '--paginate', '--output', 'ndjson'])
+    return this.ndjson(item, text, tally)
+  }
+  private gitlabPath(path: string): string {
+    const id = this.projectId
+    if (id === undefined) throw new Error('This deployment has no GitLab project')
+    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
+    if (outside) throw new Error('GitLab calls are restricted to the configured project')
+    return path ? `projects/${id}/${path}` : `projects/${id}`
+  }
+  /**
+   * Calls the user-level GitLab API, which is not scoped to the configured project: the agent's TODOs and own account.
+   * @throws CliError with GitLab's HTTP status as `code` on failure.
+   */
+  async gitlabUserApi<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
+  async gitlabUserApi(path: string, ...flags: string[]): Promise<string>
+  async gitlabUserApi<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
+    if (typeof schema === 'string') return this.run(this.deployment.codeHost!.cli, ['api', this.userPath(schema), ...rest])
+    const [path = '', ...flags] = rest
+    return schema.parse(await this.glab(['api', this.userPath(path), ...flags]))
+  }
+  /** Fetches every page of a user-level GitLab API list as newline-delimited JSON; malformed lines are skipped and counted. */
+  async gitlabUserPages<T>(item: z.ZodType<T>, path: string, tally?: Tally): Promise<T[]> {
+    const text = await this.run(this.deployment.codeHost!.cli, ['api', this.userPath(path), '--paginate', '--output', 'ndjson'])
+    return this.ndjson(item, text, tally)
+  }
+  private userPath(path: string): string {
+    const outside = /^\/|^[a-z]+:|(^|\/)\.\.?(\/|\?|$)/i.test(path)
+    if (outside || !/^(?:todos|user)(?:[/?]|$)/.test(path)) throw new Error('User-level GitLab calls are restricted to todos and the current user')
+    return path
+  }
+  /** Parses newline-delimited JSON items, skipping malformed lines and items that fail `item` validation. */
+  private ndjson<T>(item: z.ZodType<T>, text: string, tally?: Tally): T[] {
+    const items = text.split('\n').filter(Boolean).flatMap(line => {
+      try { return [JSON.parse(line) as unknown] } catch { if (tally) tally.skipped += 1; return [] }
+    })
+    return validItems(item, items, tally)
   }
   /** Runs `git` on PATH using the agent's isolated git environment and credential helper. */
   async git(args: string[], cwd: string): Promise<string> { return this.run('git', args, cwd) }

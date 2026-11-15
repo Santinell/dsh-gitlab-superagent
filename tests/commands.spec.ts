@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { CliError, Commands, commandError } from '../src/infra/commands.ts'
-import { feishuKind } from '../src/sources/feishu.ts'
-import { feishuChannel } from '../src/sources/feishu-trigger.ts'
+import { feishuKind } from './fixtures/feishu/feishu.ts'
+import { feishuChannel } from './fixtures/feishu/feishu-trigger.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { githubChannel } from '../src/sources/github-trigger.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -212,4 +212,32 @@ it('stops a running command when the signal of its work aborts, or the lifetime,
   lifetime.abort()
   await expect(other).rejects.toThrow()
   expect(Date.now() - started).toBeLessThan(4000)
+})
+
+describe('GitLab commands', () => {
+  const gitlab = testDeployment({ project: { id: 25, path: 'acme/widgets', webUrl: 'https://gitlab.example.com/acme/widgets', defaultBranch: 'main' },
+    codeHost: { kind: 'gitlab', host: 'gitlab.example.com', apiBase: 'https://gitlab.example.com/api/v4', webBase: 'https://gitlab.example.com',
+      cli: '/path/agent-glab', login: 'agent', userId: 7, commitEmail: 'agent@example.com' } })
+  const commands = () => new Commands(() => gitlab, {}, new AbortController().signal)
+
+  it('runs glab and keeps GitLab API calls inside the numeric project', async () => {
+    const value = commands(); const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":25}')
+    expect(await value.glab(['api', 'user'])).toEqual({ id: 25 })
+    expect(run).toHaveBeenCalledWith('/path/agent-glab', ['api', 'user'])
+    expect(await value.gitlabApi('issues?state=opened')).toBe('{"id":25}')
+    expect(run).toHaveBeenLastCalledWith('/path/agent-glab', ['api', 'projects/25/issues?state=opened'])
+    await expect(value.gitlabApi('../other/issues')).rejects.toThrow('GitLab calls are restricted to the configured project')
+  })
+
+  it('reads paginated GitLab list output as newline-delimited JSON and skips malformed lines', async () => {
+    const value = commands(); const tally = { skipped: 0 }
+    const run = vi.spyOn(value, 'run').mockResolvedValue('{"id":1}\nnot-json\n{"id":2}\n')
+    await expect(value.gitlabPages(z.object({ id: z.number() }), 'issues?per_page=1', tally)).resolves.toEqual([{ id: 1 }, { id: 2 }])
+    expect(run).toHaveBeenCalledWith('/path/agent-glab', ['api', 'projects/25/issues?per_page=1', '--paginate', '--output', 'ndjson'])
+    expect(tally.skipped).toBe(1)
+  })
+
+  it('maps a GitLab 403 to CliError.code', () => {
+    expect(commandError({ stderr: 'glab: HTTP 403', code: 1 })).toMatchObject({ message: 'glab: HTTP 403', code: 403 })
+  })
 })

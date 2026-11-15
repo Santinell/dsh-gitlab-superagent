@@ -44,3 +44,19 @@ it('has words for every reason code the core records', () => {
 it('words the reasons agents read in the glossary\'s words: a sender on the list, a Thread', () => {
   expect(Object.values(REASONS).filter(text => /\b(member|members|topic)\b/i.test(text))).toEqual([])
 })
+
+it('localizes every GitLab setup failure, its repair location, health and prompt part', async () => {
+  const { SETUP_PROBLEMS } = await import('../src/setup.ts')
+  for (const [code, [place]] of Object.entries(SETUP_PROBLEMS)) {
+    if (place === 'github' || code === 'gitTooOld') continue // removed with the legacy server API in P7
+    for (const dictionary of [en, zh]) {
+      expect(dictionary[`setup.${code}` as DshSuperagentKey]).toBeTruthy()
+      expect(dictionary[`problemSetupFix.${place}` as DshSuperagentKey]).toBeTruthy()
+    }
+  }
+  for (const dictionary of [en, zh]) {
+    for (const key of ['source.gitlab', 'health.gitlab', 'promptPart.skill/gitlab'] as const) expect(dictionary[key]).toBeTruthy()
+    // The state-directory guard explains the historical installation; it is not an active Source.
+    expect(Object.entries(dictionary).filter(([key, text]) => key !== 'setup.stateDirUnsupported' && /github|feishu|lark-cli|\bPR\b/i.test(text))).toEqual([])
+  }
+})

@@ -15,9 +15,10 @@ import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, Source
 import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
-import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
+import { feishuChannel } from './feishu/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
-import { feishuKind } from '../../src/sources/feishu.ts'
+import { feishuKind } from './feishu/feishu.ts'
+import { gitlabKind } from '../../src/sources/gitlab.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
@@ -111,22 +112,21 @@ export interface PanelServer {
 }
 export let server: PanelServer
 
+const kinds = () => server.settings.sources.gitlab ? [gitlabKind] as unknown as SourceKind[] : KINDS
 function resolved() {
   const accounts = server.setup.accounts
-  return accounts ? testDeployment({ repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' },
-    ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
+  return accounts ? testDeployment({ ...server.settings.sources.gitlab ? { project: { id: 25, path: accounts.project, webUrl: `https://${accounts.host}/${accounts.project}`, defaultBranch: 'main' }, codeHost: { kind: 'gitlab', host: accounts.host!, apiBase: `https://${accounts.host}/api/v4`, webBase: `https://${accounts.host}`, cli: accounts.cli!, login: accounts.agent, userId: 7, commitEmail: 'agent@example.test' } } : {}, repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' } }) : undefined
 }
-/** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
+/** Default source health: paused during setup; the legacy Feishu test kind defaults to `socket closed` unless overridden. */
 function healthOf(name: string): Health {
   if (server.setup.problem) return { state: 'paused', detail: 'Waiting for setup', code: 'setupPending' }
   if (server.health[name]) return server.health[name]
   if (name !== 'feishu') return { state: 'ready', detail: '' }
-  return server.setup.feishuProblem ? { state: 'paused', detail: server.setup.feishuProblem.detail } : { state: 'error',
-    detail: 'socket closed' }
+  return { state: 'error', detail: 'socket closed' }
 }
-const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
+const problemOf_ = (id: string) => server.setup.problem?.place === id ? server.setup.problem : undefined
 function sourceSettings(): SourceView[] {
-  return KINDS.map(kind => {
+  return kinds().map(kind => {
     const config = kind.schema.parse(server.settings.sources[kind.kind]?.config ?? {})
     const problem = problemOf_(kind.kind)
     const { admission: _admission, ...part } = server.settings.policy.sources[kind.kind] ?? { allowed: [], admission: {} }
@@ -143,7 +143,7 @@ function sourceSettings(): SourceView[] {
   })
 }
 function sourceStatuses(): SourceStatusRow[] {
-  return KINDS.map(kind => {
+  return kinds().map(kind => {
     const enabled = server.settings.sources[kind.kind]?.enabled ?? true
     const health = kind.health.map(name => ({ name, ...healthOf(name) }))
     const problem = problemOf_(kind.kind)
@@ -152,7 +152,7 @@ function sourceStatuses(): SourceStatusRow[] {
     const feishu = kind.kind === 'feishu'
     return { id: kind.kind, title: kind.title, installed: true, enabled, state, health, ...problem ? { problem } : {},
       stats: { received: feishu ? 12 : 0, filtered: feishu ? 2 : 0, lastAt: '2026-09-23T00:00:00Z' },
-      filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor('github', 'someone'), preview: 'looks wrong',
+      filtered: feishu ? [] : [{ id: 'e9', at: '2026-09-23T00:02:00Z', actor: actor(kind.kind, 'someone'), preview: 'looks wrong',
         reason: { code: 'source_disabled' } }],
       dropped: server.dropped.filter(item => item.channel.source === kind.kind && item.dropped.at >= dayAgo()) }
   })
@@ -177,12 +177,11 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
       en: 'Repository' } }] }] },
 })
 const overviewView = (): ApiResponse<'GET overview'> => {
-  const { problem, feishuProblem } = server.setup
-  const setup = problem ?? feishuProblem
+  const setup = server.setup.problem
   return {
     problems: [...setup ? [{ kind: 'setup' as const, ...setup }] : [],
       ...KINDS.some(kind => server.settings.sources[kind.kind]?.enabled !== false) ? [] : [{ kind: 'no-source' as const }],
-      ...feishuProblem || server.settings.sources.feishu?.enabled === false ? [] : [{ kind: 'source-error' as const, source: { id: 'feishu',
+      ...!server.settings.sources.feishu || server.settings.sources.feishu.enabled === false ? [] : [{ kind: 'source-error' as const, source: { id: 'feishu',
         title: { zh: '飞书', en: 'Feishu' },
         health: { name: 'feishu', state: 'error' as const, detail: 'socket closed' } } }],
       ...server.threads.filter(thread => thread.evaluating && thread.evaluating.deadline < new Date().toISOString())
@@ -248,11 +247,10 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
-    setup: { machine: MACHINE, problem: null, feishuProblem: null,
-      accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
-        name: 'Widgets Bot' } } },
+    setup: { machine: MACHINE, problem: null,
+      accounts: { repository: 'acme/widgets', project: 'acme/widgets', agent: 'agent-bot' } },
     settings, revisions: { policy: 3, eval: 1, executor: 0 },
-    prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['feishu', 'github'],
+    prompts: { masterId: 'master', sections: TEAM_SECTIONS, skillName: SKILL_NAME.source, builtin: ['gitlab'],
       skillPrefix: SKILL_PREFIX, revision: 0, current: { ...defaults, config: defaultPrompts() },
       defaults: defaultPrompts(), parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
       defaultChanged: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
@@ -344,7 +342,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { paused: body.paused }
   } },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
-    const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
+    const source = block.startsWith('source:') ? kinds().find(kind => `source:${kind.kind}` === block) : undefined
     if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
@@ -355,12 +353,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     else if (source) {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = source.schema.parse(value)
-      // As on the server, a changed CLI that fails its check refuses the save with the setup problem.
-      if (config.cli === 'lark-broken') {
-        const refused = new SetupError('feishuCliFailed', { output: 'lark-cli: app secret missing' })
-        return refuse(400, refused.message, { setup: refused.problem })
-      }
-      restarting = (config.cli ?? '') !== (server.settings.sources[source.kind]?.config.cli ?? '')
+      restarting = (SETUP_FIELDS[source.kind] ?? ['cli']).some(key => (config[key] ?? '') !== (server.settings.sources[source.kind]?.config[key] ?? ''))
       server.settings = { ...server.settings, sources: { ...server.settings.sources, [source.kind]: { enabled, config } } }
     }
     server.revisions[block] = (server.revisions[block] ?? 0) + 1
@@ -389,7 +382,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { revision: server.prompts.revision, context_delivery: 'injected' }
   } },
   'POST prompts/preview': { body: true, answer: ({ body }) => {
-    const skills = [...server.setup.accounts?.feishu ? ['feishu'] : [], 'github', ...Object.keys(body.skills)].map(name => [name,
+    const skills = ['gitlab', ...Object.keys(body.skills)].map(name => [name,
       composeSkill(body, name)])
     // The generated parts from their templates, without variables or rules.
     const environment = environmentSection(body, []), policy = policySection(SettingsSchema.parse({ policy: { rules: [] } }), body)
@@ -457,8 +450,7 @@ type Ops = Parameters<ConfigForm<Record<string, unknown>>['mutate']>[0]
 export function fakeForm(writable = true, accept = true) {
   const listeners = new Set<() => void>()
   let snapshot: ConfigFormSnapshot<Record<string, unknown>> = { status: 'ready', value: { ...MACHINE }, base: undefined, user: undefined,
-    revision: 1, writable,
-    mode: 'host' }
+    revision: 1, writable }
   const notify = () => { for (const listener of listeners) listener() }
   const mutations: { ops: Ops; revision: number | undefined }[] = []
   const form: ConfigForm<Record<string, unknown>> = {
@@ -477,4 +469,33 @@ export function fakeForm(writable = true, accept = true) {
   }
   const publish = (patch: Partial<ConfigFormSnapshot<Record<string, unknown>>>) => { snapshot = { ...snapshot, ...patch }; notify() }
   return { form, mutations, publish }
+}
+
+/** Switch the management fixture to the installed GitLab kind; historical panel cases keep their old fixtures until P7. */
+export function useGitlabData() {
+  server.settings = SettingsSchema.parse({ sources: { gitlab: { enabled: true, config: {
+    project: 'group/subgroup/widgets', host: 'gitlab.example.test', cli: 'glab-agent' } } },
+    policy: { sources: { gitlab: { allowed: [{ id: 'alice' }], bots: [{ id: 'review-bot' }] } } } })
+  server.setup = { ...server.setup, problem: null, accounts: { repository: '', project: 'group/subgroup/widgets', agent: 'agent-bot',
+    host: 'gitlab.example.test', cli: 'glab-agent' } }
+  server.person = []
+  server.tickets = { open: [], ended: [] }
+  server.threads = []
+}
+
+export function gitlabTicketData() {
+  useGitlabData()
+  const base = 'https://gitlab.example.test/group/subgroup/widgets'
+  const issue = threadSummary({ key: 'gitlab:issue:1', source: 'gitlab', title: '#1 Fix login', url: `${base}/-/issues/1`, facts: { number: { value: '#1' } } })
+  const mr = threadSummary({ key: 'gitlab:mr:1', source: 'gitlab', title: '!1 Fix login', url: `${base}/-/merge_requests/1`, facts: { mr: { value: '!1' }, ci: { label: { en: 'CI', zh: 'CI' }, value: 'passed' } } })
+  const detail = ticketDetail()
+  server.threads = [issue, mr]
+  server.ticketDetails.t1 = { ...detail, title: 'Fix login', mandate: { ...detail.mandate, actor: actor('gitlab', 'alice'), scope: 'Fix login' },
+    decision: { ...acceptDecision(), thread: issue.key, preview: '@agent fix login' }, threads: [issue, mr], environment: [], inputs: [],
+    channels: [issue, mr].map(thread => ({ source: 'gitlab', url: thread.url! + '#note_9001', label: { en: thread.title, zh: thread.title } })) }
+  server.tickets.open = [ticketSummary({ title: 'Fix login', threads: [issue, mr] })]
+  server.threadPages = key => {
+    const thread = server.threads.find(thread => thread.key === key)
+    return thread ? { ...thread, tickets: server.tickets.open, correlated: [], decisions: [], context: [], timeline: [], earlier: null } : undefined
+  }
 }

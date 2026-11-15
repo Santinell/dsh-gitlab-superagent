@@ -1,11 +1,11 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, statSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
+import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, verifyEnvironment, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
   from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
@@ -32,24 +32,23 @@ describe('worker shims', () => {
     const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
     expect(JSON.parse(stdout)).toEqual({ login: 'agent-bot', config: `${dir}/agent-config`, path: [join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':') })
   })
-  it('make `lark-cli` fail without a Feishu bot and each blocked command fail with the agent\'s login', async () => {
-    await writeEnvironment(testDeployment({ stateDir: dir, feishu: undefined }), ['personal-gh'])
+  it('makes each blocked command fail with the agent\'s login', async () => {
+    await writeEnvironment(testDeployment({ stateDir: dir }), ['personal-gh'])
     const bin = workerBin(dir)
-    await expect(exec(join(bin, 'lark-cli'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
     await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
   })
-  it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
-    const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
+  it('keeps `gh` working and shims no `git` when the blocked commands name the commands workers need', async () => {
+    const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"')
     const base = testDeployment()
-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
+    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh } }), ['gh', 'git'])
     const bin = workerBin(dir)
-    expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
+    expect((await exec(join(bin, 'gh'), ['api', 'user'])).stdout).toBe('gh api user\n')
     expect(readdirSync(bin)).not.toContain('git')
   })
   it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli'])
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
-    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh'])
     // A file that merely contains the marker on a later line, a symlink to a shim, and a foreign gitconfig are all rejected.
     writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
     await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
@@ -66,7 +65,7 @@ describe('worker shims', () => {
     const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by dsh-superagent', `Written by ${name}`))
     legacy(join(workerBin(dir), 'old-cli'), 'dsh-tag'); legacy(join(workerBin(dir), 'older-cli'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
-    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
+    expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh'])
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
   })
 })
@@ -183,4 +182,61 @@ describe('the repository the host\'s environment names', () => {
       expect(env.GIT_CEILING_DIRECTORIES).toBe(dir)
     } finally { vi.unstubAllEnvs() }
   })
+})
+
+describe('GitLab worker environment', () => {
+  it('writes a glab shim, blocks gh, and configures the GitLab credential helper', async () => {
+    const cli = program(join(dir, 'glab-agent'), 'echo glab "$@"')
+    const deployment = testDeployment({ stateDir: dir, project: { id: 25, path: 'acme/widgets', webUrl: 'https://gitlab.example.com/acme/widgets', defaultBranch: 'main' },
+      codeHost: { kind: 'gitlab', host: 'gitlab.example.com', apiBase: 'https://gitlab.example.com/api/v4', webBase: 'https://gitlab.example.com',
+        cli, login: 'agent', userId: 7, commitEmail: 'agent@example.com' } })
+    await writeEnvironment(deployment, [])
+    const bin = workerBin(dir)
+    expect(readdirSync(bin).sort()).toEqual(['gh', 'glab'])
+    expect((await exec(join(bin, 'glab'), ['api', 'user'])).stdout).toBe('glab api user\n')
+    await expect(exec(join(bin, 'gh'), ['api', 'user'])).rejects.toMatchObject({ code: 1,
+      stderr: 'gh is unavailable: this installation uses glab.\n' })
+    const config = readFileSync(workerGitConfig(dir), 'utf8')
+    expect(config).toContain('[credential "https://gitlab.example.com"]')
+    expect(config).toContain(credentialHelper(cli))
+    expect(config).toContain('insteadOf = git@gitlab.example.com:')
+    expect(config).not.toContain('github.com')
+    expect(agentVariables(dir)).toMatchObject({ GITLAB_TOKEN: undefined, GLAB_TOKEN: undefined, CI_JOB_TOKEN: undefined })
+    await expect(verifyEnvironment(deployment, subprocess(workerGitConfig(dir)), new AbortController().signal)).resolves.toBeUndefined()
+  })
+})
+
+it('runs the example env-token wrapper against absolute real glab despite a worker shim and operator credentials', async () => {
+  const config = join(dir, 'private config'), bin = join(dir, 'worker-bin')
+  mkdirSync(config, { mode: 0o700 }); mkdirSync(bin)
+  writeFileSync(join(config, 'token'), 'synthetic-agent-credential', { mode: 0o600 })
+  const wrapper = join(dir, 'glab-agent')
+  writeFileSync(wrapper, readFileSync(new URL('../examples/glab-agent.sh', import.meta.url)), { mode: 0o700 })
+  program(join(bin, 'glab'), 'exit 99')
+  const real = program(join(dir, 'real', 'glab'), `test "$GITLAB_TOKEN" = synthetic-agent-credential || exit 10
+ test -z "\${GLAB_TOKEN+x}" && test -z "\${CI_JOB_TOKEN+x}" && test -z "\${GITLAB_API_HOST+x}" || exit 11
+ test "$GITLAB_HOST" = gitlab.example.com || exit 12
+ test "$GLAB_CONFIG_DIR" = "$GLAB_AGENT_CONFIG_DIR" || exit 13
+ test "$1" = api && test "$2" = user || exit 14
+ printf '%s\\n' '{"username":"agent"}'`)
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GLAB_AGENT_CONFIG_DIR: config, GLAB_AGENT_EXECUTABLE: real,
+    GITLAB_TOKEN: 'synthetic-operator', GLAB_TOKEN: 'synthetic-operator', CI_JOB_TOKEN: 'synthetic-operator', GITLAB_API_HOST: 'operator.invalid' }
+  expect((await exec(wrapper, ['api', 'user'], { env, timeout: 3000 })).stdout.trim()).toBe('{"username":"agent"}')
+  expect(env.GITLAB_TOKEN).toBe('synthetic-operator')
+  await expect(exec(wrapper, [], { env: { ...env, GLAB_AGENT_EXECUTABLE: 'glab' }, timeout: 3000 })).rejects.toMatchObject({ code: 1 })
+  await expect(exec(wrapper, [], { env: { ...env, GLAB_AGENT_EXECUTABLE: wrapper }, timeout: 3000 })).rejects.toMatchObject({ code: 1 })
+  writeFileSync(join(config, 'token'), '')
+  await expect(exec(wrapper, [], { env, timeout: 3000 })).rejects.toMatchObject({ code: 1 })
+})
+
+it('installs the documented wrapper on a fresh HOME without a pre-existing local bin directory', async () => {
+  const home = join(dir, 'fresh home')
+  mkdirSync(home)
+  const guide = readFileSync(new URL('../docs/006-deployment.md', import.meta.url), 'utf8')
+  const recipe = guide.slice(guide.indexOf('## Agent wrapper and token file')).match(/```sh\n([\s\S]*?)```/)![1]!
+  await exec('sh', ['-eu', '-c', recipe], { cwd: new URL('../', import.meta.url), env: { ...process.env, HOME: home }, timeout: 3000 })
+  expect(statSync(join(home, '.local/bin')).isDirectory()).toBe(true)
+  expect(statSync(join(home, '.config/glab-agent')).mode & 0o777).toBe(0o700)
+  expect(statSync(join(home, '.local/bin/glab-agent')).mode & 0o777).toBe(0o700)
+  expect(readFileSync(join(home, '.local/bin/glab-agent'), 'utf8')).toBe(readFileSync(new URL('../examples/glab-agent.sh', import.meta.url), 'utf8'))
 })

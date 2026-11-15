@@ -3,7 +3,7 @@ import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, polic
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
-import { feishuKind } from '../src/sources/feishu.ts'
+import { feishuKind } from './fixtures/feishu/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 import type { Thread, Ticket, Trigger } from '../src/core/index.ts'
 

@@ -18,6 +18,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
     user: { login: 'bob' }, created_at: '2026-09-09T00:00:00Z', body }))
   const gate = { issue: undefined as Promise<void> | undefined }
   const commands = {
+    gitlabApi: vi.fn(async () => 'export const value = 1\n'),
     repository: 'acme/widgets', deployment: testDeployment(),
     withSignal() { return commands },
     gh: vi.fn(async (args: string[]) => {

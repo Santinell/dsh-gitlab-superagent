@@ -50,7 +50,7 @@ Worker subagents, including nested ones, use DeepSeek Harness's `standard` prese
 
 Before the first Assignment, if the Ticket directory does not exist, the prepare command runs once with `sh` in the execution root. It has ten minutes to finish. Without a prepare command, the worker starts in an empty directory.
 
-A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A pull request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
+A failed command fails the Ticket and records its output. A retry or a person's message on one of the Ticket's Threads tries preparation again. A typical command uses `git worktree` to create a checkout. A merge request belongs to the Ticket when its branch's last path segment matches the Ticket's short name.
 
 ### Concurrency
 
@@ -68,42 +68,40 @@ The prepare command and Executor instructions receive the same execution variabl
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
-| `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
-| `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
-| `DSH_SUPERAGENT_GITHUB_NUMBER`, `DSH_SUPERAGENT_GITHUB_PR_HEAD` | GitHub | The Issue or pull request that started the Ticket, and its head ref when it is a pull request |
-| `DSH_SUPERAGENT_FEISHU_BOT`, `DSH_SUPERAGENT_FEISHU_CHAT` | Feishu | The bot, and the chat that started the Ticket |
+| `DSH_SUPERAGENT_GITLAB_PROJECT` | GitLab | Canonical project path, including nested groups |
+| `DSH_SUPERAGENT_GITLAB_ACCOUNT`, `DSH_SUPERAGENT_GITLAB_COMMIT_EMAIL` | GitLab | Agent username and resolved commit email |
+| `DSH_SUPERAGENT_GITLAB_IID` | GitLab | Issue/MR IID of the origin; the thread kind distinguishes the independent sequences |
+| `DSH_SUPERAGENT_GITLAB_MR_SOURCE_BRANCH` | GitLab | Source branch when known from an MR origin; otherwise empty |
 
 Ticket-specific values come from its directory and originating Trigger. Other values come from the current deployment settings. Only the panel can change execution environment settings; text sent to the main Session cannot change the configured shell command.
 
-Workers reach GitHub through the agent account's `gh` and Feishu through the bot's `lark-cli`. Blocked commands fail when invoked by name.
+Workers use the agent's `glab` wrapper for GitLab and git's configured host credential helper. Blocked commands fail when invoked by name.
 
 These wrappers and directories establish defaults, not a security boundary. A worker can still execute a program by absolute path.
 
 ## Merging
 
-Auto-merge is governed by the **Delivery requirements** prompt. The host has no merge-specific decision logic.
+The agent never merges an MR, enables auto-merge or approves on a person's behalf. A person merges every MR. Approvals and auto-merge state are read-only facts, not an additional authorization barrier before ready. Project branch protection remains the project's responsibility.
 
-By default, the Executor never enables auto-merge as the agent account: GitHub attributes the merge to whoever enabled it. Delivery requirements must name another account's CLI for merging. Without one, people merge the pull request.
+Read `gitlab/merge_requests/<iid>/pipelines` or `gitlab/pipelines/<id>/jobs` for CI. A normalized failing-job set changes only after baseline; changing job/pipeline IDs is not a new failure. Allowed failures are excluded; failed/canceled pipelines without failed jobs are represented by status. Missing/running/manual/blocked pipelines do not confirm recovery: success does. Old retried attempts are excluded by the API default.
 
-The default instructions allow auto-merge only for a pull request opened for the Ticket, when it is ready, the required approvals cover the head commit, and additions plus deletions total fewer than 200 lines. Before pushing another revision, the Executor withdraws auto-merge.
-
-Reviews without a body, such as approvals, also arrive as Triggers and can wake an Executor waiting for review. These instructions govern the agent, not GitHub's merge rules. To enforce approvals, require them in branch protection and dismiss stale approvals. Omit the merge CLI or remove the auto-merge paragraph to require manual merging.
+Read `gitlab/merge_requests/<iid>/approvals` for Free approval facts. A missing/forbidden capability is unavailable, not zero approvals or a requirement to perform a new approval action. MR facts include merge status, approvers and requested auto-merge, without executing those actions.
 
 ## How a Ticket ends
 
-- **Ready without a pull request:** a `ready` Report ends the Ticket as completed.
+- **Ready without a merge request:** a `ready` Report ends the Ticket as completed.
 - **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on its Threads resumes it.
-### Pull requests
+### Merge requests
 
-A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the GitHub Source. Reopened pull requests are followed again.
+A Ticket follows the merge request it started from once its Executor reports it. It also follows each merge request opened from its branch once reported by the Executor or found by the GitLab Source. Reopened merge requests are followed again.
 
-The Ticket is done when none of the pull requests it opened remain open. If it opened none, all pull requests it follows must be closed. It then ends with the outcome of the last relevant close and keeps its Subscriptions, allowing a later human comment to resume it.
+The Ticket is done when none of the merge requests it opened remain open. If it opened none, all merge requests it follows must be closed. It then ends with the outcome of the last relevant close and keeps its Subscriptions, allowing a later human comment to resume it.
 
-A close does not end the Ticket while resumed, retried or recovered work is unfinished. It also waits if the Executor acknowledged or answered a follow-up it owns but has not since made a non-progress Report or ended a turn after reading that message. A later `ready` Report ends the Ticket once the same pull-request completion rule is satisfied.
+A close does not end the Ticket while resumed, retried or recovered work is unfinished. It also waits if the Executor acknowledged or answered a follow-up it owns but has not since made a non-progress Report or ended a turn after reading that message. A later `ready` Report ends the Ticket once the same merge-request completion rule is satisfied.
 
-Chat Channels receive one final notice about the pull-request outcome. GitHub already displays the outcome on the pull request itself. Removing a Ticket's Subscription to a pull request also stops it following that pull request.
+Chat Channels receive one final notice about the merge-request outcome. GitLab already displays the outcome on the merge request itself. Removing a Ticket's Subscription to a merge request also stops it following that merge request.
 
-"Awaiting review" therefore means a `ready` Report with a pull request.
+"Awaiting review" therefore means a `ready` Report with a merge request.
 
 ### Follow-ups and context Threads
 
@@ -113,7 +111,7 @@ An Input counts as read after the Session takes it into a step and subsequently 
 
 Threads followed only for context still deliver messages, but do not give the Ticket ownership of human follow-ups or resume ended Tickets. Those messages can be assessed independently.
 
-Sources poll subscribed Threads while a live Ticket subscribes, and for two weeks after the later of the last Trigger and the subscribing Tickets' end. Afterwards, messages arrive only through ordinary intake: GitHub notifications or Feishu live events.
+Sources poll subscribed Threads while a live Ticket subscribes, and for two weeks after the later of the last Trigger and the subscribing Tickets' end. Afterwards, messages arrive only through ordinary intake: GitLab TODOs and observed streams.
 
 ## Failure and recovery
 
@@ -138,12 +136,12 @@ Available while an open Ticket is in `person / delivery`, `person / blocked` or 
 
 Once a person's message reached a blocked or failed Ticket, the Executor has the message, so the Ticket shows as working, or as queued when a failed launch starts again, and offers no retry, unless delivering that message failed.
 
-A retry ends the current Assignment and starts a new one in the same Executor Session, directory, branch and pull request.
+A retry ends the current Assignment and starts a new one in the same Executor Session, directory, branch and merge request.
 
 The Executor model applies only when a Session is created; an existing Session keeps its model.
 ### Restart
 
-Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.
+Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitLab before repeating any outside action, oldest Ticket first.
 
 Assignments that are waiting, ready, blocked or failed stay as they are, unless an Input reached them after that Report, in which case they start again too.
 
@@ -161,17 +159,12 @@ Each kind of work reports an error among the overview's system problems only aft
 Relays to the main Session keep their order, and so do notices; a failed one holds back the later ones of its kind.
 ### Source failure
 
-The GitHub Source reads each Issue, pull request and Thread on its own: a failed read keeps its error on its Thread, is read again on the next poll, and counts towards an error of the Source, which it reports after three failed polls in a row by default; any successful poll resets the count.
+The GitLab Source reads targets independently. Failed notes keep their checkpoint; a partial stream does not advance its shared cursor. A healthy independent target can still progress. After `failuresBeforeError` failed rounds (default three), source health reports an error; success clears it. Polling is at least 60 seconds, with Retry-After/fallback backoff for 429.
 
-GitHub answers 404 also when the agent lost access to a private repository, so a 404 is retried.
+TODO targets that return 404/410 are dropped as gone; other failing TODO targets retry for up to a day. A 404 can conceal denied project access, so inspect permissions when health changes unexpectedly. An unreadable bound MR does not itself complete its Ticket. Subscribed threads retain their own notes checkpoints even with observation off or a newer stream cursor.
 
-A notified Issue or pull request whose reads keep failing is dropped a day after its first failed read, and at once when GitHub reports it as deleted; it then no longer fails the poll, its Thread keeps the error, and the Source's state names it.
+A new description mention uses the TODO's author, timestamp and body snapshot, rather than the Issue's original author. Stable IDs deduplicate retries; disable/abort before intake leaves the unread event available after enable. Malformed list items are counted; an incomplete pipeline job list cannot establish recovery.
 
-Its read position stays where it was, so a later notification or a poll of its Thread reads what the failed reads missed.
-
-The Feishu event consumer reports every failure, and polling of subscribed topics keeps each failure on its Thread.
-
-A malformed item in a GitHub list or a Feishu page is skipped, and the Source's state counts it.
 ### Channel failure
 
 Outgoing messages are stored and sent as stored work, retried with backoff from 5 seconds, doubling up to 300.
@@ -184,9 +177,9 @@ A message with failed attempts is a system problem until it goes out or is withd
 
 A message is dropped only when its Source no longer listens to the conversation, or when the Source answers that the conversation can never receive it; while its Source is off, it waits.
 
-The Sources answer that for a deleted Issue or a locked conversation on GitHub, and for a recalled message or one Feishu no longer finds on Feishu.
+GitLab answers gone for a deleted target (404/410), a missing discussion, or a locked conversation (403 with a lock diagnostic). Other permission/network failures remain retryable.
 
-A reply to a review comment that no longer exists goes to the pull request's conversation instead.
+A reply whose original discussion no longer exists is not moved to the MR timeline.
 
 A dropped message keeps its record, with when and why it was dropped and the Ticket it was for, so it is never queued again; a dropped acknowledgement reads as dropped, not sent.
 ### Pause processing

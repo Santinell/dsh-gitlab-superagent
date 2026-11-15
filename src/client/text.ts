@@ -2,7 +2,7 @@
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { DshSuperagentKey } from './locales.ts'
 import type { Localized } from '../sources/kind.ts'
-import type { SetupProblem } from '../setup.ts'
+import { SETUP_PROBLEMS, type SetupProblem } from '../setup.ts'
 import type { Health } from '../sources/host.ts'
 import { reasonText, type Reason } from '../core/reasons.ts'
 
@@ -31,10 +31,15 @@ function label(t: T, reason: Reason): string {
   if (/^\w*Error\b/.test(written)) { const first = written.split('\n')[0]!; return first.length > 140 ? `${first.slice(0, 140)}…` : first }
   return written
 }
-export const setupText = (t: T, problem: Pick<SetupProblem, 'code' | 'values'>): string => t(`setup.${problem.code}`, problem.values)
+export const setupText = (t: T, problem: Pick<SetupProblem, 'code' | 'values'>): string => {
+  const key = `setup.${problem.code}` as DshSuperagentKey
+  const text = t(key, problem.values)
+  // Legacy setup codes remain on the server until P7; do not expose raw translation keys.
+  return text !== key ? text : SETUP_PROBLEMS[problem.code][1].replace(/\{(\w+)\}/g, (match, name: string) => problem.values[name] ?? match)
+}
 export const healthText = (t: T, health: Pick<Health, 'detail' | 'code' | 'values'>): string =>
   health.code ? t(`healthCode.${health.code}` as const, health.values) : health.detail
-/** Replaces Feishu and GitHub content placeholders (images, cards, media, forwards, unresolved mentions) with localized labels. */
+/** Replaces source content placeholders (images, cards, media, forwards, unresolved mentions) with localized labels. */
 export function readableMarkers(t: T, text: string): string {
   return text.replace(/!\[[^\]]*\]\([^)]*\)|\[Image: [^\]]*\]|\[image\]/g, t('imageMarker'))
     .replace(/\[Chat card: [^\]]*\]/g, t('cardMarker'))

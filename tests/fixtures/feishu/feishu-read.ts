@@ -1,11 +1,11 @@
 /** Trigger-scoped Feishu context reader; retrieved messages are returned for model inspection without entering intake. */
 import { z } from 'zod'
-import type { Trigger } from '../core/index.ts'
-import { validItems, type Commands } from '../infra/commands.ts'
+import type { Trigger } from '../../../src/core/index.ts'
+import { validItems, type Commands } from '../../../src/infra/commands.ts'
 import { admissionImageKeys, readAdmissionImage } from './feishu-image.ts'
 import { feishuRef, feishuTime, HistoricalMessageSchema, HistoryPageSchema, historyText, withMentionNames, type HistoricalMessage }
   from './feishu-trigger.ts'
-import type { ContextMessage, ThreadContext } from './kind.ts'
+import type { ContextMessage, ThreadContext } from '../../../src/sources/kind.ts'
 
 /** Retained source message reference anchoring context reads; `at` is the timestamp around which `chatAround` queries. */
 export interface FeishuRef { triggerId: string; chatId: string; messageId: string; at?: string }
