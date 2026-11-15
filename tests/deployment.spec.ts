@@ -139,6 +139,23 @@ describe('setup', () => {
     expect(setup.problem).toMatchObject({ place: 'deployment', code: 'stateDirUnsupported' })
   })
 
+  it('passes the Source host to the account check performed on save', async () => {
+    const calls: string[][] = []
+    const project = { id: 25, path_with_namespace: 'acme/widgets', web_url: 'https://gitlab.example.com/acme/widgets', default_branch: 'main',
+      permissions: { project_access: { access_level: 30 }, group_access: null } }
+    const subprocess = { spawn: (options: { argv: string[] }) => {
+      calls.push(options.argv)
+      const text = options.argv.includes('user') ? JSON.stringify(user) : JSON.stringify(project)
+      return { done: Promise.resolve({ exitCode: 0 }), collected: {
+        stdout: { readFrom: () => ({ text }) }, stderr: { readFrom: () => ({ text: '' }) } } }
+    } } as never
+    const setup = new Setup({ context: { subprocess } as never, machine: machine(), lifetime: new AbortController().signal, restart: () => {} })
+    await setup.checkAccounts('source:gitlab', SettingsSchema.parse({ sources: {
+      gitlab: { enabled: true, config: { project: 'acme/widgets', host: 'gitlab.example.com' } } } }))
+    expect(calls.length).toBeGreaterThan(0)
+    for (const argv of calls) expect(argv).toContain('GITLAB_HOST=gitlab.example.com')
+  })
+
   it('names each missing or mismatched GitLab input', async () => {
     await expect(resolveGitlabDeployment(machine(), { cli: 'glab' }, probe, path)).rejects.toEqual(setupError('gitlab', 'projectUnset'))
     await expect(resolveGitlabDeployment(machine(), { project: 'acme/widgets', cli: join(dir, 'missing'), host: 'gitlab.example.com' }, probe, path))

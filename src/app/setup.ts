@@ -73,7 +73,7 @@ export class Setup {
   private async checkGitlab(settings: Settings): Promise<Deployment> {
     const config = settings.sources.gitlab?.config
     if (settings.sources.github) throw new SetupError('stateDirUnsupported')
-    return resolveGitlabDeployment(this.host.machine, config, this.probe())
+    return resolveGitlabDeployment(this.host.machine, config, this.probe(configuredHost(config)))
   }
   async blockCommands(blocked: readonly string[]): Promise<void> {
     if (this.resolved) await writeEnvironment(this.resolved, blocked)
@@ -94,7 +94,9 @@ export class Setup {
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })
     }
     await writeEnvironment(deployment, settings.executor.blockedCommands).catch(machineProblem)
-    this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
+    // Worker shells inherit this process environment, so the git credential helper reaches the wrapper with the Source host.
+    this.restoreEnvironment = applyEnvironment({ ...this.variables, ...deployment.codeHost ? { GITLAB_HOST: deployment.codeHost.host } : {} },
+      machine.stateDir, this.path)
     await verifyEnvironment(deployment, context.subprocess, lifetime).catch((error: unknown) => {
       this.restore()
       machineProblem(error)
