@@ -498,6 +498,26 @@ describe('review regressions: edited descriptions and stopping during body reads
     } finally { h.store.close() }
   })
 
+  it.each([false, true])('accepts a description mention edited after creation when GitLab puts the title in TODO.body, MR=%s', async mr => {
+    const h = host()
+    const now = new Date().toISOString()
+    const url = `https://gitlab.example.com/tlcamp/human-resources/-/${mr ? 'merge_requests' : 'issues'}/7`
+    const title = 'Smoke: test'
+    const todo = todoOf(7, { action_name: 'mentioned', author: { username: 'pavel.evdokimov' }, target_type: mr ? 'MergeRequest' : 'Issue',
+      target_url: url, body: title, created_at: now })
+    const entity = { ...(mr ? mrFixture : issueOf()), iid: 7, title, author: { username: 'original-author' },
+      created_at: '2026-11-16T08:47:35Z', updated_at: now, description: '@agent добавь строчку и создай MR', web_url: url }
+    api({ todos: [todo], [mr ? 'merge_requests/7' : 'issues/7']: entity, 'issues/7/notes': [], 'merge_requests/7/discussions': [] })
+    try {
+      await pollRound(h); await pollRound(h)
+      expect(h.receive).toHaveBeenCalledTimes(1)
+      const trigger = h.receive.mock.calls[0]![0]
+      expect(trigger).toMatchObject({ actor: { id: 'pavel.evdokimov' }, human: true, addressed: 'mention', at: now, meta: { iid: 7, mr, todoId: todo.id } })
+      expect(trigger.text).toContain('добавь строчку')
+      expect(h.store.triggers.disposition(trigger.id)?.filtered).toBeUndefined()
+    } finally { h.store.close() }
+  })
+
   it("never borrows the Issue author's authority for a body mention by an unlisted editor", async () => {
     const h = host(), now = new Date().toISOString()
     api({ todos: [todoOf(7, { action_name: 'mentioned', author: { username: 'outsider' }, target_url: issueOf().web_url, created_at: now })],

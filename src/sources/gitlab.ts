@@ -333,11 +333,29 @@ async function receiveBody(ctx: SourceContext, round: Round, entity: GitlabIssue
   since: string, todos: GitlabTodo[]): Promise<void> {
   if (stopped(ctx, round)) throw new Error('The GitLab Source stopped during the poll')
   const login = ctx.deployment.codeHost?.login ?? ''
-  const bodyTodos = todos.filter(todo => ['mentioned', 'directly_addressed'].includes(todo.action_name)
-    && todo.target_url && !/#note_\d+/i.test(todo.target_url) && mentions(todo.body ?? '', login))
+  const candidates = todos.filter(todo => ['mentioned', 'directly_addressed'].includes(todo.action_name)
+    && todo.target_url && !/#note_\d+/i.test(todo.target_url))
+  const bodyTodos = candidates.filter(todo => mentions(todo.body ?? '', login))
   if (!bodyTodos.length) {
-    if (Date.parse(entity.created_at) >= Date.parse(since) && !sameName(entity.author.username, login)) {
-      await ctx.receive(mr ? mrTrigger(entity as GitlabMergeRequest, login) : issueTrigger(entity as GitlabIssue, login))
+    // GitLab 19.2.9 puts the entity title in TODO.body for a mention added by editing the description,
+    // so read the mention from the entity and attribute it to the TODO's editor and time.
+    const edited = candidates.filter(todo => mentions(entity.description ?? '', login)
+      && !(sameName(entity.author.username, todo.author.username) && Math.abs(Date.parse(todo.created_at) - Date.parse(entity.created_at)) <= 60_000))
+    if (!edited.length) {
+      if (Date.parse(entity.created_at) >= Date.parse(since) && !sameName(entity.author.username, login)) {
+        await ctx.receive(mr ? mrTrigger(entity as GitlabMergeRequest, login) : issueTrigger(entity as GitlabIssue, login))
+      }
+      return
+    }
+    for (const todo of edited) {
+      if (stopped(ctx, round)) throw new Error('The GitLab Source stopped during the poll')
+      const trigger = mr
+        ? mrTrigger({ ...entity, author: todo.author } as GitlabMergeRequest, login)
+        : issueTrigger({ ...entity, author: todo.author } as GitlabIssue, login)
+      trigger.id = key('gitlab-body-mention', String(todo.id))
+      trigger.at = todo.created_at
+      trigger.meta = { ...trigger.meta, ...mr ? { mrAuthor: entity.author.username } : {}, todoId: todo.id }
+      if (!ctx.triggers.get(trigger.id) && !sameName(todo.author.username, login)) await ctx.receive(trigger)
     }
     return
   }
